@@ -1,0 +1,436 @@
+import { Chapter } from '@/types'
+import { getAllChaptersFromContent } from './content'
+
+interface ChapterMeta {
+  description: string
+  emoji: string
+  gradient: string
+  accentBg: string
+  accentBorder: string
+  accentText: string
+  difficulty: 'Beginner' | 'Intermediate' | 'Advanced'
+}
+
+const CHAPTER_META: Record<string, ChapterMeta> = {
+  'web-fundamentals': {
+    description: 'HTTP, HTTPS, REST APIs, cookies, localStorage and how browsers communicate',
+    emoji: '🌐',
+    gradient: 'from-blue-500 to-blue-600',
+    accentBg: 'bg-blue-50',
+    accentBorder: 'border-blue-200',
+    accentText: 'text-blue-700',
+    difficulty: 'Beginner',
+  },
+  'browser-internals-devtools': {
+    description: 'DOM, DevTools, CSR vs SSR, Static Site Generation explained',
+    emoji: '🔍',
+    gradient: 'from-violet-500 to-violet-600',
+    accentBg: 'bg-violet-50',
+    accentBorder: 'border-violet-200',
+    accentText: 'text-violet-700',
+    difficulty: 'Beginner',
+  },
+  'networking-basics': {
+    description: 'DNS, TCP vs UDP, CDNs, WebSockets, CORS and reverse proxies',
+    emoji: '🌊',
+    gradient: 'from-cyan-500 to-cyan-600',
+    accentBg: 'bg-cyan-50',
+    accentBorder: 'border-cyan-200',
+    accentText: 'text-cyan-700',
+    difficulty: 'Beginner',
+  },
+  'server-side-concepts': {
+    description: 'Monolith vs microservices, load balancing, Docker, Kubernetes',
+    emoji: '⚙️',
+    gradient: 'from-green-500 to-green-600',
+    accentBg: 'bg-green-50',
+    accentBorder: 'border-green-200',
+    accentText: 'text-green-700',
+    difficulty: 'Beginner',
+  },
+  'databases': {
+    description: 'SQL vs NoSQL, indexes, ACID properties, sharding and replication',
+    emoji: '🗄️',
+    gradient: 'from-orange-500 to-orange-600',
+    accentBg: 'bg-orange-50',
+    accentBorder: 'border-orange-200',
+    accentText: 'text-orange-700',
+    difficulty: 'Beginner',
+  },
+  'caching': {
+    description: 'Cache patterns, invalidation strategies, Redis in depth',
+    emoji: '⚡',
+    gradient: 'from-yellow-500 to-amber-500',
+    accentBg: 'bg-yellow-50',
+    accentBorder: 'border-yellow-200',
+    accentText: 'text-yellow-700',
+    difficulty: 'Intermediate',
+  },
+  'scalability-load-balancing': {
+    description: 'Horizontal vs vertical scaling, load balancing algorithms',
+    emoji: '📈',
+    gradient: 'from-red-500 to-rose-500',
+    accentBg: 'bg-red-50',
+    accentBorder: 'border-red-200',
+    accentText: 'text-red-700',
+    difficulty: 'Intermediate',
+  },
+  'microservices-apis': {
+    description: 'API gateways, GraphQL, gRPC, service discovery patterns',
+    emoji: '🔌',
+    gradient: 'from-pink-500 to-pink-600',
+    accentBg: 'bg-pink-50',
+    accentBorder: 'border-pink-200',
+    accentText: 'text-pink-700',
+    difficulty: 'Intermediate',
+  },
+  'message-queues-async-systems': {
+    description: 'Async processing, Kafka, message queues vs event streams',
+    emoji: '📨',
+    gradient: 'from-teal-500 to-teal-600',
+    accentBg: 'bg-teal-50',
+    accentBorder: 'border-teal-200',
+    accentText: 'text-teal-700',
+    difficulty: 'Intermediate',
+  },
+  'security': {
+    description: 'JWT, OAuth 2.0, SQL injection, XSS and web security fundamentals',
+    emoji: '🔐',
+    gradient: 'from-rose-500 to-rose-600',
+    accentBg: 'bg-rose-50',
+    accentBorder: 'border-rose-200',
+    accentText: 'text-rose-700',
+    difficulty: 'Intermediate',
+  },
+  'advanced-system-design': {
+    description: 'URL shortener, Twitter feed, consistent hashing, Saga, circuit breaker',
+    emoji: '🏗️',
+    gradient: 'from-indigo-500 to-indigo-600',
+    accentBg: 'bg-indigo-50',
+    accentBorder: 'border-indigo-200',
+    accentText: 'text-indigo-700',
+    difficulty: 'Advanced',
+  },
+  'devops-infrastructure': {
+    description: 'Infrastructure as Code with Terraform, service meshes, GitOps',
+    emoji: '🚀',
+    gradient: 'from-lime-500 to-lime-600',
+    accentBg: 'bg-lime-50',
+    accentBorder: 'border-lime-200',
+    accentText: 'text-lime-700',
+    difficulty: 'Intermediate',
+  },
+  'ci-cd-pipelines': {
+    description: 'CI/CD stages, canary deployments, blue-green strategies',
+    emoji: '🔄',
+    gradient: 'from-emerald-500 to-emerald-600',
+    accentBg: 'bg-emerald-50',
+    accentBorder: 'border-emerald-200',
+    accentText: 'text-emerald-700',
+    difficulty: 'Intermediate',
+  },
+  'monitoring-observability': {
+    description: 'SLOs, SLAs, chaos engineering, distributed tracing with OpenTelemetry',
+    emoji: '📊',
+    gradient: 'from-purple-500 to-purple-600',
+    accentBg: 'bg-purple-50',
+    accentBorder: 'border-purple-200',
+    accentText: 'text-purple-700',
+    difficulty: 'Intermediate',
+  },
+  'mlops-fundamentals': {
+    description: 'MLOps vs DevOps, model drift detection, feature stores',
+    emoji: '🤖',
+    gradient: 'from-fuchsia-500 to-fuchsia-600',
+    accentBg: 'bg-fuchsia-50',
+    accentBorder: 'border-fuchsia-200',
+    accentText: 'text-fuchsia-700',
+    difficulty: 'Intermediate',
+  },
+  'data-pipelines-etl': {
+    description: 'ETL vs ELT pipelines, Apache Airflow, data lakes vs warehouses',
+    emoji: '🔁',
+    gradient: 'from-amber-500 to-amber-600',
+    accentBg: 'bg-amber-50',
+    accentBorder: 'border-amber-200',
+    accentText: 'text-amber-700',
+    difficulty: 'Intermediate',
+  },
+  'feature-engineering-serving': {
+    description: 'Feature engineering, online vs offline feature serving, Feast',
+    emoji: '🧮',
+    gradient: 'from-sky-500 to-sky-600',
+    accentBg: 'bg-sky-50',
+    accentBorder: 'border-sky-200',
+    accentText: 'text-sky-700',
+    difficulty: 'Advanced',
+  },
+  'model-training-experimentation': {
+    description: 'Hyperparameter tuning, cross-validation, Optuna strategies',
+    emoji: '🧠',
+    gradient: 'from-slate-500 to-slate-600',
+    accentBg: 'bg-slate-50',
+    accentBorder: 'border-slate-200',
+    accentText: 'text-slate-700',
+    difficulty: 'Advanced',
+  },
+  'ai-ml-system-design': {
+    description: 'Recommendation systems, real-time anomaly detection architecture',
+    emoji: '🎯',
+    gradient: 'from-purple-500 to-indigo-500',
+    accentBg: 'bg-purple-50',
+    accentBorder: 'border-purple-200',
+    accentText: 'text-purple-700',
+    difficulty: 'Advanced',
+  },
+  'inference-serving': {
+    description: 'Batch vs real-time inference, model serving architectures',
+    emoji: '⚡',
+    gradient: 'from-blue-500 to-indigo-500',
+    accentBg: 'bg-blue-50',
+    accentBorder: 'border-blue-200',
+    accentText: 'text-blue-700',
+    difficulty: 'Advanced',
+  },
+  'data-quality-monitoring': {
+    description: 'Data quality checks, validation frameworks, monitoring pipelines',
+    emoji: '✅',
+    gradient: 'from-green-500 to-teal-500',
+    accentBg: 'bg-green-50',
+    accentBorder: 'border-green-200',
+    accentText: 'text-green-700',
+    difficulty: 'Advanced',
+  },
+  'database-selection': {
+    description: 'Choosing PostgreSQL, MongoDB, Redis, Cassandra, Elasticsearch for your use case',
+    emoji: '🗃️',
+    gradient: 'from-orange-500 to-red-500',
+    accentBg: 'bg-orange-50',
+    accentBorder: 'border-orange-200',
+    accentText: 'text-orange-700',
+    difficulty: 'Intermediate',
+  },
+  'scaling-by-users': {
+    description: 'Architecture evolution from 100 to 1 billion users with cost estimates',
+    emoji: '📉',
+    gradient: 'from-red-500 to-orange-500',
+    accentBg: 'bg-red-50',
+    accentBorder: 'border-red-200',
+    accentText: 'text-red-700',
+    difficulty: 'Intermediate',
+  },
+  'requirements-based-system-design': {
+    description: '6-step framework for system design interviews with worked examples',
+    emoji: '📋',
+    gradient: 'from-indigo-500 to-blue-500',
+    accentBg: 'bg-indigo-50',
+    accentBorder: 'border-indigo-200',
+    accentText: 'text-indigo-700',
+    difficulty: 'Advanced',
+  },
+  'network-protocol-deep-dives': {
+    description: 'HTTP/1.1 vs HTTP/2 vs HTTP/3, gRPC vs REST vs GraphQL, webhooks',
+    emoji: '🛜',
+    gradient: 'from-cyan-500 to-blue-500',
+    accentBg: 'bg-cyan-50',
+    accentBorder: 'border-cyan-200',
+    accentText: 'text-cyan-700',
+    difficulty: 'Advanced',
+  },
+  'storage-systems': {
+    description: 'Object storage with S3, message brokers vs event streaming platforms',
+    emoji: '💾',
+    gradient: 'from-amber-500 to-yellow-500',
+    accentBg: 'bg-amber-50',
+    accentBorder: 'border-amber-200',
+    accentText: 'text-amber-700',
+    difficulty: 'Intermediate',
+  },
+  'advanced-mlops': {
+    description: 'Model registry, shadow deployments, online learning, A/B testing',
+    emoji: '🔬',
+    gradient: 'from-fuchsia-500 to-purple-500',
+    accentBg: 'bg-fuchsia-50',
+    accentBorder: 'border-fuchsia-200',
+    accentText: 'text-fuchsia-700',
+    difficulty: 'Advanced',
+  },
+  'data-systems-for-ml-engineers': {
+    description: 'Batch processing, stream processing, Spark and data system patterns',
+    emoji: '📦',
+    gradient: 'from-teal-500 to-cyan-500',
+    accentBg: 'bg-teal-50',
+    accentBorder: 'border-teal-200',
+    accentText: 'text-teal-700',
+    difficulty: 'Advanced',
+  },
+  'production-ai-systems': {
+    description: 'LLM deployment, RAG systems, vector search architectures',
+    emoji: '🤯',
+    gradient: 'from-violet-500 to-purple-500',
+    accentBg: 'bg-violet-50',
+    accentBorder: 'border-violet-200',
+    accentText: 'text-violet-700',
+    difficulty: 'Advanced',
+  },
+  'security-for-ml-ai-systems': {
+    description: 'Prompt injection, model security, data privacy in ML pipelines',
+    emoji: '🛡️',
+    gradient: 'from-rose-500 to-red-500',
+    accentBg: 'bg-rose-50',
+    accentBorder: 'border-rose-200',
+    accentText: 'text-rose-700',
+    difficulty: 'Advanced',
+  },
+  'cost-engineering': {
+    description: 'Cloud cost optimization, GPU costs, infrastructure efficiency',
+    emoji: '💰',
+    gradient: 'from-lime-500 to-green-500',
+    accentBg: 'bg-lime-50',
+    accentBorder: 'border-lime-200',
+    accentText: 'text-lime-700',
+    difficulty: 'Advanced',
+  },
+  'distributed-systems-theory': {
+    description: 'Two Generals Problem, consensus, CAP theorem, backpressure in depth',
+    emoji: '🌍',
+    gradient: 'from-indigo-600 to-violet-600',
+    accentBg: 'bg-indigo-50',
+    accentBorder: 'border-indigo-200',
+    accentText: 'text-indigo-700',
+    difficulty: 'Advanced',
+  },
+  'database-internals': {
+    description: 'B-trees, LSM trees, MVCC, WAL, storage engine internals',
+    emoji: '🔩',
+    gradient: 'from-orange-600 to-amber-600',
+    accentBg: 'bg-orange-50',
+    accentBorder: 'border-orange-200',
+    accentText: 'text-orange-700',
+    difficulty: 'Advanced',
+  },
+  'ml-system-design-theory': {
+    description: 'Latency vs throughput, head-of-line blocking, thundering herd in ML',
+    emoji: '🧪',
+    gradient: 'from-violet-600 to-purple-600',
+    accentBg: 'bg-violet-50',
+    accentBorder: 'border-violet-200',
+    accentText: 'text-violet-700',
+    difficulty: 'Advanced',
+  },
+  'data-engineering-concepts': {
+    description: 'Partitioning strategies, compaction, columnar storage, Parquet',
+    emoji: '📐',
+    gradient: 'from-amber-600 to-orange-600',
+    accentBg: 'bg-amber-50',
+    accentBorder: 'border-amber-200',
+    accentText: 'text-amber-700',
+    difficulty: 'Advanced',
+  },
+  'reliability-operations': {
+    description: 'Error budgets, SRE practices, runbooks, incident management',
+    emoji: '🛡️',
+    gradient: 'from-red-600 to-rose-600',
+    accentBg: 'bg-red-50',
+    accentBorder: 'border-red-200',
+    accentText: 'text-red-700',
+    difficulty: 'Advanced',
+  },
+  'ai-product-architecture': {
+    description: 'LLM product design, prompt engineering at scale, evaluation frameworks',
+    emoji: '💡',
+    gradient: 'from-teal-600 to-cyan-600',
+    accentBg: 'bg-teal-50',
+    accentBorder: 'border-teal-200',
+    accentText: 'text-teal-700',
+    difficulty: 'Advanced',
+  },
+  'organizational-process': {
+    description: 'Team topologies, ML platform teams, technical debt in ML systems',
+    emoji: '👥',
+    gradient: 'from-slate-500 to-slate-600',
+    accentBg: 'bg-slate-50',
+    accentBorder: 'border-slate-200',
+    accentText: 'text-slate-700',
+    difficulty: 'Advanced',
+  },
+  'emerging-patterns-edge-cases': {
+    description: 'Serverless ML, edge inference, multimodal systems, future architectures',
+    emoji: '🌟',
+    gradient: 'from-purple-600 to-fuchsia-600',
+    accentBg: 'bg-purple-50',
+    accentBorder: 'border-purple-200',
+    accentText: 'text-purple-700',
+    difficulty: 'Advanced',
+  },
+}
+
+const DEFAULT_META: ChapterMeta = {
+  description: 'System design concepts and patterns',
+  emoji: '📚',
+  gradient: 'from-slate-500 to-slate-600',
+  accentBg: 'bg-slate-50',
+  accentBorder: 'border-slate-200',
+  accentText: 'text-slate-700',
+  difficulty: 'Intermediate',
+}
+
+export function getChapters(): Chapter[] {
+  const contentChapters = getAllChaptersFromContent()
+  return contentChapters.map((c) => {
+    const meta = CHAPTER_META[c.slug] || DEFAULT_META
+    return {
+      slug: c.slug,
+      title: c.title,
+      description: meta.description,
+      emoji: meta.emoji,
+      gradient: meta.gradient,
+      accentBg: meta.accentBg,
+      accentBorder: meta.accentBorder,
+      accentText: meta.accentText,
+      difficulty: meta.difficulty,
+      fileIndex: c.fileIndex,
+      questionIds: c.questionIds,
+    }
+  })
+}
+
+export function getChapterBySlug(slug: string): Chapter | undefined {
+  return getChapters().find((c) => c.slug === slug)
+}
+
+// Group chapters by source file (for home page sections)
+export function getChapterGroups(): Array<{
+  label: string
+  subtitle: string
+  fileIndex: number
+  chapters: Chapter[]
+}> {
+  const chapters = getChapters()
+  return [
+    {
+      label: 'Part 1 — Foundations',
+      subtitle: 'Web, networking, databases, and core architecture',
+      fileIndex: 1,
+      chapters: chapters.filter((c) => c.fileIndex === 1),
+    },
+    {
+      label: 'Part 2 — DevOps & MLOps',
+      subtitle: 'Infrastructure, CI/CD, and machine learning operations',
+      fileIndex: 2,
+      chapters: chapters.filter((c) => c.fileIndex === 2),
+    },
+    {
+      label: 'Part 3 — Advanced Topics',
+      subtitle: 'Database selection, scaling patterns, and production AI',
+      fileIndex: 3,
+      chapters: chapters.filter((c) => c.fileIndex === 3),
+    },
+    {
+      label: 'Part 4 — Deep Dives',
+      subtitle: 'Distributed systems theory and ML architecture internals',
+      fileIndex: 4,
+      chapters: chapters.filter((c) => c.fileIndex === 4),
+    },
+  ]
+}
