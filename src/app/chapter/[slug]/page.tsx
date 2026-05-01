@@ -16,7 +16,7 @@ export async function generateMetadata({ params }: Props) {
   const { slug } = await params
   const chapter = getChapterBySlug(slug)
   return {
-    title: chapter ? `${chapter.title} — System Design Mastery` : 'Chapter Not Found',
+    title: chapter ? `${chapter.title} — System Design with Inte(Claude :3)` : 'Chapter Not Found',
   }
 }
 
