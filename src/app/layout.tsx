@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'System Design Mastery',
+  title: 'System Design with Inte(Claude :3)',
   description: '197 system design questions for AI and ML engineers — from beginner to advanced.',
 }
 
