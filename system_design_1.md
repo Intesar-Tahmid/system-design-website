@@ -236,6 +236,133 @@ const step = sessionStorage.getItem("step"); // "2"
 
 ---
 
+### Q189. What is the difference between a URL, a URI, and a URN?
+
+**Answer:**
+
+These three terms are often confused but have a clear hierarchy:
+
+- **URI (Uniform Resource Identifier)** — the broadest term. Any string that identifies a resource.
+- **URL (Uniform Resource Locator)** — a URI that also tells you *where* the resource is and *how* to access it. All URLs are URIs.
+- **URN (Uniform Resource Name)** — a URI that names a resource permanently, regardless of location. `urn:isbn:978-0-13-468599-1` (a book ISBN) is a URN — it identifies the book forever even if the physical location changes.
+
+**In practice:** When engineers say "URL", they almost always mean the full address like `https://example.com/users/42`. The distinction rarely matters day-to-day, but it comes up in spec reading and API design.
+
+```
+URI (superset)
+├── URL: https://example.com/page  ← has scheme + location
+└── URN: urn:isbn:978-0-13-468599-1 ← permanent name, no location
+```
+
+---
+
+### Q190. What is HTTP caching and how do Cache-Control headers work?
+
+**Answer:**
+
+HTTP caching lets browsers and intermediaries (CDNs, proxies) store a copy of a response and reuse it without hitting the origin server again. The `Cache-Control` header is the primary mechanism.
+
+**Key directives:**
+
+| Directive | Meaning |
+|-----------|---------|
+| `max-age=3600` | Cache is fresh for 3600 seconds |
+| `no-cache` | Must revalidate with server before using cached copy (does NOT mean "don't cache") |
+| `no-store` | Never cache this response (for sensitive data) |
+| `public` | Shared caches (CDNs) may cache this |
+| `private` | Only the browser (not CDN) may cache this |
+| `must-revalidate` | Once stale, must revalidate before using |
+
+**Validation headers** let the server say "use your cache, it hasn't changed":
+- `ETag` — a fingerprint of the content. Browser sends `If-None-Match: "abc123"`, server returns `304 Not Modified` if unchanged.
+- `Last-Modified` — browser sends `If-Modified-Since`, server returns `304` if unchanged.
+
+```
+Browser → GET /logo.png
+Server  → 200 OK, Cache-Control: max-age=86400, ETag: "abc123"
+[next day]
+Browser → GET /logo.png, If-None-Match: "abc123"
+Server  → 304 Not Modified (no body sent — fast!)
+```
+
+---
+
+### Q191. What is idempotency in HTTP methods and why does it matter?
+
+**Answer:**
+
+An operation is **idempotent** if calling it multiple times produces the same result as calling it once. This is critical for building safe retry logic.
+
+| Method | Idempotent? | Safe (read-only)? |
+|--------|-------------|-------------------|
+| GET    | Yes         | Yes               |
+| HEAD   | Yes         | Yes               |
+| PUT    | Yes         | No                |
+| DELETE | Yes         | No                |
+| POST   | No          | No                |
+| PATCH  | Usually No  | No                |
+
+**Why it matters:** Network failures can leave you unsure if a request succeeded. If the operation is idempotent, you can safely retry. If it isn't, you might create duplicate orders or charge a customer twice.
+
+**Real-world pattern:** Payment APIs accept an `Idempotency-Key` header — a unique UUID per request. If you retry with the same key, the server returns the original response instead of processing again.
+
+```
+POST /payments
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+
+→ First call: charge $50, return { "id": "pay_123", "status": "success" }
+→ Retry with same key: return same { "id": "pay_123" } — no double charge
+```
+
+---
+
+### Q192. What is content negotiation in HTTP?
+
+**Answer:**
+
+Content negotiation is the mechanism where a client tells the server what formats it can accept, and the server responds in the best matching format.
+
+**Client sends `Accept` headers:**
+- `Accept: application/json` — wants JSON
+- `Accept: text/html, application/xhtml+xml` — wants HTML
+- `Accept-Language: en-US, en;q=0.9` — prefers US English, then any English
+- `Accept-Encoding: gzip, deflate, br` — supports compression
+
+**Server responds with `Content-Type` header** confirming what it sent:
+```
+Content-Type: application/json; charset=utf-8
+Content-Encoding: gzip
+```
+
+**Why it matters:** The same URL `/api/users/42` can serve JSON to an API client and HTML to a browser — same endpoint, different representations. REST APIs use this to support versioning via `Accept: application/vnd.myapi.v2+json`.
+
+---
+
+### Q193. What is the same-origin policy and how is it enforced by browsers?
+
+**Answer:**
+
+The **same-origin policy** is a browser security rule that prevents JavaScript on one origin from reading responses from a different origin. An "origin" is the combination of **scheme + hostname + port**.
+
+`https://example.com` and `https://api.example.com` are **different origins** (different hostname).
+`https://example.com` and `http://example.com` are **different origins** (different scheme).
+
+**What is blocked:** JavaScript cannot read the response body of a cross-origin fetch. Images, scripts, and CSS can be *loaded* cross-origin (displayed/executed), but their content cannot be read by JS.
+
+**Why it exists:** Without it, a malicious website could silently make requests to your bank's API using your session cookies and read your balance.
+
+**Relationship to CORS:** CORS (Cross-Origin Resource Sharing) is the mechanism that *relaxes* the same-origin policy. The server uses `Access-Control-Allow-Origin` headers to explicitly grant permission to specific other origins.
+
+```
+Browser on https://evil.com tries:
+fetch("https://yourbank.com/api/balance")
+→ Browser blocks the response (same-origin policy)
+→ Only allowed if yourbank.com returns:
+   Access-Control-Allow-Origin: https://evil.com  ← bank would never do this
+```
+
+---
+
 ## Browser Internals & DevTools
 
 ---
@@ -457,6 +584,149 @@ SSR approach:
 - Page load: ~200-400ms
 - Server is involved in every single request
 ```
+
+---
+
+### Q194. What is the critical rendering path and how does it affect page performance?
+
+**Answer:**
+
+The **critical rendering path** is the sequence of steps the browser takes to convert HTML, CSS, and JavaScript into pixels on the screen. Optimizing it reduces the time to first meaningful paint.
+
+**Steps:**
+1. **Parse HTML** → build the DOM tree
+2. **Parse CSS** → build the CSSOM (CSS Object Model)
+3. **Combine DOM + CSSOM** → build the Render Tree (only visible elements)
+4. **Layout** → calculate position and size of each element
+5. **Paint** → fill in pixels (colors, images, borders)
+6. **Composite** → layer the painted layers in the correct order
+
+**What blocks rendering:**
+- CSS is **render-blocking** — the browser won't render until all CSS is loaded and parsed.
+- JavaScript is **parser-blocking** — `<script>` tags pause HTML parsing by default. Use `defer` or `async` to avoid this.
+
+**Optimization techniques:**
+- Inline critical CSS (above-the-fold styles) directly in `<head>`
+- Load non-critical CSS with `media="print"` trick or JS
+- Move `<script>` tags to end of `<body>` or use `defer`
+- Minimize and compress CSS/JS files
+
+---
+
+### Q195. What is the difference between reflow and repaint in the browser?
+
+**Answer:**
+
+**Reflow (layout):** Recalculating the geometry (position and size) of elements. Triggered by changes that affect layout — adding/removing DOM elements, changing width/height, font size, window resize.
+
+**Repaint:** Redrawing pixels without changing layout — triggered by visual changes that don't affect geometry, like `color`, `background-color`, `visibility`.
+
+**Reflow is more expensive** because it cascades — changing one element's size can cause all its siblings and parents to reflow too.
+
+**Performance impact:**
+```javascript
+// Bad — causes 3 separate reflows
+el.style.width = '100px';
+el.style.height = '200px';
+el.style.margin = '10px';
+
+// Good — batch style changes via class
+el.classList.add('new-dimensions');
+
+// Bad — "layout thrashing" (read then write alternating)
+const w = el.offsetWidth;  // read (forces layout flush)
+el.style.width = w + 10 + 'px';  // write
+const h = el.offsetHeight;  // read again (another flush!)
+el.style.height = h + 10 + 'px';
+
+// Good — batch reads, then batch writes
+const w = el.offsetWidth;
+const h = el.offsetHeight;
+el.style.width = w + 10 + 'px';
+el.style.height = h + 10 + 'px';
+```
+
+**CSS properties that skip layout entirely** (only trigger composite): `transform`, `opacity` — these run on the GPU compositor thread, making animations buttery smooth.
+
+---
+
+### Q196. What are Web Workers and when would you use them?
+
+**Answer:**
+
+**Web Workers** run JavaScript in a background thread, separate from the main UI thread. Since JavaScript is single-threaded, long computations block the UI and freeze the page. Web Workers solve this.
+
+**What they can do:**
+- Run CPU-intensive code (image processing, data parsing, crypto)
+- Make network requests (fetch)
+- Use a subset of browser APIs
+
+**What they cannot do:**
+- Access the DOM directly
+- Access `window`, `document`, or `localStorage`
+
+**Communication is via message passing:**
+```javascript
+// main.js
+const worker = new Worker('worker.js');
+worker.postMessage({ data: largeArray });
+worker.onmessage = (e) => console.log('Result:', e.data);
+
+// worker.js
+self.onmessage = (e) => {
+  const result = heavyComputation(e.data.data);  // doesn't block UI
+  self.postMessage(result);
+};
+```
+
+**Use cases:** Parsing large CSV files in the browser, running ML inference (TensorFlow.js), real-time audio/video processing, compressing images before upload.
+
+---
+
+### Q197. What is the Performance tab in browser DevTools used for?
+
+**Answer:**
+
+The **Performance tab** records a timeline of everything the browser does during a page interaction — painting, scripting, layout, network, and more. It helps you find *why* a page feels slow.
+
+**Key metrics visible:**
+- **FCP (First Contentful Paint)** — when first text/image appears
+- **LCP (Largest Contentful Paint)** — when the main content loads
+- **TBT (Total Blocking Time)** — time the main thread was blocked
+- **Long Tasks** — any JS task over 50ms (causes visible jank)
+- **Frame rate** — drops below 60fps show as red frames
+
+**How to use it:**
+1. Open DevTools → Performance tab
+2. Click Record, interact with the page, click Stop
+3. Look for red bars (long tasks), yellow (scripting), purple (rendering)
+4. Click any bar to see the exact function call stack that caused it
+
+**Flame chart:** Shows the call stack over time — taller stacks mean more nested function calls. A wide bar at the top means a function ran for a long time.
+
+---
+
+### Q198. What is browser caching and how does cache busting work?
+
+**Answer:**
+
+**Browser caching** stores static assets (JS, CSS, images) locally so they don't need to be re-downloaded on repeat visits. The browser checks `Cache-Control: max-age` to determine how long to keep them.
+
+**The problem:** If you deploy a new version of `app.js`, users with the old file cached won't see the update until their cache expires.
+
+**Cache busting** forces the browser to fetch a new version by changing the file's URL. Since the URL is different, there's no cached version to use.
+
+**Techniques:**
+```html
+<!-- Content hash in filename (webpack/Vite does this automatically) -->
+<script src="/app.8f3d9a2b.js"></script>
+<!-- New deploy → new hash → new URL → browser fetches fresh copy -->
+
+<!-- Query string (less reliable — some proxies ignore query strings) -->
+<script src="/app.js?v=2.1.0"></script>
+```
+
+**Best practice:** Set `Cache-Control: max-age=31536000, immutable` on hashed filenames (they never change, so they can be cached forever), and `Cache-Control: no-cache` on `index.html` (so the browser always checks for a new version of the entry point).
 
 ---
 
@@ -687,6 +957,124 @@ server {
   }
 }
 ```
+
+---
+
+### Q199. What is the OSI model and why is it useful?
+
+**Answer:**
+
+The **OSI (Open Systems Interconnection) model** is a conceptual framework that divides network communication into 7 layers, each with a specific responsibility. It helps engineers reason about where a problem or feature lives.
+
+| Layer | Name | What it does | Examples |
+|-------|------|-------------|---------|
+| 7 | Application | User-facing protocols | HTTP, DNS, SMTP |
+| 6 | Presentation | Data formatting, encryption | TLS, JSON encoding |
+| 5 | Session | Managing connections | Sockets |
+| 4 | Transport | Reliable delivery, ports | TCP, UDP |
+| 3 | Network | Routing between networks | IP addresses, routers |
+| 2 | Data Link | Hop-to-hop delivery | Ethernet, MAC addresses |
+| 1 | Physical | Raw bits over a medium | Cables, Wi-Fi signals |
+
+**Why it matters:** "Load balancers" operate at Layer 4 (TCP) or Layer 7 (HTTP) — L7 load balancers can route based on URL paths. "Firewalls" can block at Layer 3 (IP) or Layer 7 (URLs). Knowing the layer tells you what information is available for decisions.
+
+---
+
+### Q200. What is an IP address and what is the difference between IPv4 and IPv6?
+
+**Answer:**
+
+An **IP address** is a unique numerical label assigned to every device on a network, used to route data packets to the right destination.
+
+**IPv4:** 32-bit addresses written as four decimal numbers: `192.168.1.1`. This gives ~4.3 billion unique addresses — a number we've exhausted.
+
+**IPv6:** 128-bit addresses written in hexadecimal: `2001:0db8:85a3::8a2e:0370:7334`. This gives 340 undecillion addresses — effectively unlimited.
+
+**Key differences:**
+
+| Feature | IPv4 | IPv6 |
+|---------|------|------|
+| Address length | 32-bit | 128-bit |
+| Address space | ~4.3 billion | ~340 undecillion |
+| NAT needed? | Yes (address shortage) | No |
+| Header size | 20 bytes | 40 bytes (fixed) |
+| Broadcast | Yes | No (uses multicast) |
+
+**Private IP ranges (IPv4):** `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x` — used inside home/office networks. NAT translates these to a single public IP for internet traffic.
+
+---
+
+### Q201. What is a VPN and how does it work technically?
+
+**Answer:**
+
+A **VPN (Virtual Private Network)** creates an encrypted tunnel between your device and a VPN server. All your traffic is routed through this tunnel, hiding it from your local network and ISP.
+
+**How it works:**
+1. Your device establishes an encrypted connection (using protocols like WireGuard, OpenVPN, or IPSec) to the VPN server
+2. All network traffic is encrypted before leaving your device
+3. The VPN server decrypts it and forwards it to the destination
+4. Responses come back to the VPN server, get encrypted, and sent to you
+
+**Use cases:**
+- **Privacy:** Your ISP sees only encrypted traffic to the VPN server, not your actual destinations
+- **Corporate access:** Employees connect to company internal services securely from anywhere
+- **Bypass geo-restrictions:** Appear to be browsing from the VPN server's country
+
+**VPN for engineers specifically:** Site-to-site VPNs connect entire office networks or cloud VPCs to each other. Most cloud providers offer managed VPN gateways for this. AWS Direct Connect and Azure ExpressRoute are dedicated private connections (faster and more reliable than VPN tunnels).
+
+---
+
+### Q202. What is a firewall and how does it protect a network?
+
+**Answer:**
+
+A **firewall** is a security system that monitors and controls incoming and outgoing network traffic based on rules. It decides what to allow and what to block.
+
+**Types:**
+- **Packet filter (L3/L4):** Inspects IP addresses and ports. "Block all traffic on port 22 except from 10.0.0.0/8."
+- **Stateful inspection:** Tracks connection state. Knows that an incoming packet is a response to an outgoing request (vs. an unsolicited attack).
+- **Application firewall (L7/WAF):** Understands HTTP. Can block SQL injection patterns, rate-limit by URL path, block certain user agents.
+
+**Common rules:**
+```
+Allow: 0.0.0.0/0 → port 443 (HTTPS from anywhere)
+Allow: 0.0.0.0/0 → port 80  (HTTP, redirect to HTTPS)
+Allow: 10.0.0.0/8 → port 22  (SSH only from internal network)
+Deny:  0.0.0.0/0 → port 5432 (block direct DB access from internet)
+```
+
+**In cloud:** Security Groups (AWS) and Firewall Rules (GCP) act as virtual firewalls around instances. A best practice is to have databases in a private subnet with no direct internet access.
+
+---
+
+### Q203. What is latency vs bandwidth and why does the distinction matter?
+
+**Answer:**
+
+These two metrics are often confused but measure fundamentally different things:
+
+- **Latency** — the time delay for a single packet to travel from source to destination (milliseconds). Think of it as the "speed of the pipe."
+- **Bandwidth** — the amount of data that can be transferred per unit of time (Mbps, Gbps). Think of it as the "width of the pipe."
+
+**Analogy:** A highway. Latency is how long it takes one car to drive from city A to city B. Bandwidth is how many cars can be on the highway simultaneously.
+
+**Why the distinction matters:**
+- Downloading a large file? Bandwidth is the bottleneck. Upgrading from 100Mbps to 1Gbps helps a lot.
+- A database query returning 1KB of data? Bandwidth is irrelevant. Latency is everything — it determines how fast you get a response.
+- Video conferencing? Both matter. High bandwidth for the video stream, low latency for real-time feel.
+
+**Typical latencies:**
+```
+L1 cache hit:     ~0.5ns
+RAM access:       ~100ns
+SSD read:         ~100μs
+Datacenter round trip: ~0.5ms
+Same-country network:  ~10ms
+Cross-continent:       ~150ms
+```
+
+Design systems around the latency of their slowest operation.
 
 ---
 
@@ -933,6 +1321,151 @@ spec:
 
 ---
 
+### Q204. What is serverless computing and how does it differ from traditional servers?
+
+**Answer:**
+
+**Serverless computing** means the cloud provider manages server provisioning, scaling, and maintenance entirely. You deploy functions (or containers), and they run on-demand. You pay per invocation, not for idle time.
+
+**Traditional server vs. serverless:**
+
+| Aspect | Traditional | Serverless |
+|--------|-------------|-----------|
+| Provisioning | You manage VMs/containers | Provider manages automatically |
+| Scaling | Manual or auto-scaling rules | Instant, automatic to zero |
+| Billing | Pay for uptime | Pay per invocation + duration |
+| Cold start | None | ~100ms-3s initial delay |
+| State | Long-lived process (has memory) | Stateless (no persistent memory) |
+
+**Common serverless platforms:** AWS Lambda, Google Cloud Functions, Vercel Functions, Cloudflare Workers.
+
+**When serverless works well:** Event-driven workloads, infrequent API calls, background jobs (image resizing on upload), webhook handlers.
+
+**When it doesn't work well:** Long-running processes (Lambda max 15 min), workloads needing persistent connections (database connection pools), latency-sensitive apps (cold starts hurt).
+
+---
+
+### Q205. What are long-polling, server-sent events (SSE), and WebSockets — and when do you choose each?
+
+**Answer:**
+
+Three techniques for getting real-time data from server to client, each with different trade-offs:
+
+**Long-polling:** Client sends a request, server holds it open until there's new data (or timeout). Client immediately sends a new request after receiving a response.
+- Simple to implement, works everywhere
+- High server resource usage (open connections per client)
+- Use for: simple chat apps, low-frequency updates
+
+**Server-Sent Events (SSE):** Browser opens a persistent HTTP connection. Server pushes events whenever it has data. One-directional (server → client only).
+- Simple API (`EventSource`), auto-reconnects, text-only
+- Use for: live feeds, notifications, dashboards, stock tickers
+
+**WebSockets:** Full-duplex connection — both sides can send/receive at any time.
+- Lowest latency for two-way communication
+- More complex infrastructure (need sticky sessions or pub/sub backend)
+- Use for: real-time collaboration, multiplayer games, live chat
+
+```
+Long-polling: Client asks → wait → Server responds → Client asks again
+SSE:          Client subscribes → Server pushes → Server pushes → ...
+WebSocket:    ←→ bidirectional at any time ←→
+```
+
+---
+
+### Q206. What is the difference between sticky sessions and stateless servers?
+
+**Answer:**
+
+**Sticky sessions (session affinity):** A load balancer ensures that requests from the same client always go to the same server. The server stores the user's session state in memory.
+
+**Problems with sticky sessions:**
+- If that server crashes, the user's session is lost
+- Uneven load distribution (busy users all hit one server)
+- Scaling becomes harder — you can't just add/remove servers freely
+
+**Stateless servers:** Each server has no knowledge of previous requests. Session state is stored externally (in Redis, a database, or encoded in a JWT the client carries). Any server can handle any request.
+
+```
+Sticky session architecture:
+User A → always → Server 1 (holds A's cart in memory)
+User B → always → Server 2 (holds B's cart in memory)
+→ Server 1 crashes → User A loses their cart
+
+Stateless architecture:
+User A → Server 1, 2, or 3 (cart stored in Redis)
+User A → Server 2 → reads cart from Redis → same cart
+→ Server 1 crashes → no data lost
+```
+
+**Best practice:** Design stateless servers, store session data in a fast external store like Redis. This is a prerequisite for horizontal scaling.
+
+---
+
+### Q207. What is the sidecar pattern in microservices?
+
+**Answer:**
+
+The **sidecar pattern** deploys a helper container alongside your main application container in the same pod/VM. The sidecar handles cross-cutting concerns so your app doesn't have to.
+
+**Common sidecar use cases:**
+- **Service mesh proxy** (Envoy/Istio) — handles TLS, retries, circuit breaking, load balancing transparently
+- **Log shipping** — a Fluentd sidecar reads your app's logs and ships them to a central log store
+- **Config sync** — a sidecar watches for config changes and updates a local file the app reads
+- **Security scanning** — a sidecar monitors network traffic for anomalies
+
+**Why it's useful:**
+```
+Without sidecar:
+App → manually implement TLS, retries, logging, metrics
+
+With sidecar:
+App → just sends HTTP → Envoy sidecar handles TLS, retries, metrics
+```
+
+The main app stays simple. The sidecar is maintained separately and can be updated without redeploying the app. In Kubernetes, a Pod can have multiple containers sharing the same network namespace and volume mounts.
+
+---
+
+### Q208. What is graceful shutdown and why does it matter in production?
+
+**Answer:**
+
+**Graceful shutdown** means a server finishes handling its in-flight requests before stopping, rather than killing them immediately when it receives a shutdown signal (SIGTERM).
+
+**Without graceful shutdown:**
+```
+Load balancer → send 50 requests to Server A
+Deploy starts → SIGKILL Server A immediately
+→ 50 requests return 500 errors or connection resets
+→ Users see broken page loads
+```
+
+**With graceful shutdown:**
+```
+Deploy starts → send SIGTERM to Server A
+Server A: "I'm going down, let me finish current requests"
+  1. Stop accepting new connections
+  2. Wait for all in-flight requests to complete (up to 30s)
+  3. Close database connections cleanly
+  4. Exit
+→ 0 dropped requests
+```
+
+**Implementation in Node.js:**
+```javascript
+process.on('SIGTERM', () => {
+  server.close(() => {    // stop accepting new connections
+    db.close();           // close DB connections
+    process.exit(0);
+  });
+});
+```
+
+Kubernetes sends SIGTERM before forcefully killing a pod (`terminationGracePeriodSeconds`). Always implement graceful shutdown — it's the difference between zero-downtime deploys and angry users during deployments.
+
+---
+
 ## Databases
 
 ---
@@ -1137,6 +1670,159 @@ All reads  → 2 Replicas (handle 90% of traffic)
 
 ---
 
+### Q209. What is a database transaction and how do COMMIT and ROLLBACK work?
+
+**Answer:**
+
+A **transaction** is a group of SQL operations that execute as a single atomic unit — either all succeed, or all fail together. This prevents partial updates that leave data in an inconsistent state.
+
+**COMMIT** permanently saves all changes made in the transaction.
+**ROLLBACK** undoes all changes made in the transaction back to the state before it started.
+
+**Classic example — bank transfer:**
+```sql
+BEGIN;
+
+UPDATE accounts SET balance = balance - 500 WHERE id = 1;  -- debit Alice
+UPDATE accounts SET balance = balance + 500 WHERE id = 2;  -- credit Bob
+
+-- If both succeeded:
+COMMIT;
+
+-- If anything failed (e.g., Bob's account doesn't exist):
+ROLLBACK;  -- Alice's debit is also undone
+```
+
+Without transactions, a crash between the two UPDATE statements would debit Alice but never credit Bob — money disappears.
+
+**Autocommit:** Most databases run in "autocommit" mode by default, where each statement is its own transaction. You must explicitly use `BEGIN`/`START TRANSACTION` to group operations.
+
+---
+
+### Q210. What is the difference between a primary key, foreign key, and unique constraint?
+
+**Answer:**
+
+**Primary Key:** Uniquely identifies each row in a table. Cannot be NULL. Each table has at most one primary key (can span multiple columns — composite key). The database automatically creates an index on it.
+
+**Foreign Key:** A column (or columns) in one table that references the primary key of another table. Enforces **referential integrity** — you can't insert a row with a foreign key value that doesn't exist in the referenced table.
+
+**Unique Constraint:** Ensures all values in a column are distinct. Unlike a primary key, it can allow NULL values (depending on the database), and a table can have multiple unique constraints.
+
+```sql
+CREATE TABLE users (
+  id       SERIAL PRIMARY KEY,          -- primary key: unique + not null
+  email    VARCHAR(255) UNIQUE,         -- unique: no duplicate emails
+  username VARCHAR(50)  UNIQUE NOT NULL
+);
+
+CREATE TABLE posts (
+  id      SERIAL PRIMARY KEY,
+  user_id INT NOT NULL,
+  title   TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  -- Cannot insert a post with user_id=999 if no user with id=999 exists
+  -- ON DELETE CASCADE: if user deleted, their posts are deleted too
+);
+```
+
+---
+
+### Q211. What is an ORM and what are its trade-offs?
+
+**Answer:**
+
+An **ORM (Object-Relational Mapper)** maps database tables to classes in your programming language, letting you interact with the database using objects and methods instead of writing raw SQL.
+
+**Examples:** SQLAlchemy (Python), Hibernate (Java), ActiveRecord (Ruby), Prisma (TypeScript), Django ORM.
+
+```python
+# Without ORM (raw SQL)
+cursor.execute("SELECT * FROM users WHERE age > %s AND active = true", (18,))
+rows = cursor.fetchall()
+users = [User(**row) for row in rows]
+
+# With SQLAlchemy ORM
+users = db.query(User).filter(User.age > 18, User.active == True).all()
+```
+
+**Advantages:**
+- Less boilerplate, faster development
+- Database-agnostic (switch Postgres to MySQL with a config change)
+- Prevents many SQL injection vulnerabilities
+- Handles connection pooling, migrations
+
+**Disadvantages:**
+- Generated SQL can be inefficient — ORMs sometimes produce N+1 queries
+- Abstracts away the database, making it hard to debug or optimize
+- Complex queries are awkward — sometimes you still need raw SQL
+- Learning the ORM adds overhead on top of learning SQL
+
+**Best practice:** Use an ORM for standard CRUD, use raw SQL or query builders for complex reporting queries.
+
+---
+
+### Q212. What is database migration and how do you manage schema changes safely?
+
+**Answer:**
+
+A **database migration** is a versioned, incremental change to a database schema — adding a table, changing a column type, adding an index. Migration files track *what* changed and *when*, so the schema evolves alongside the code.
+
+**Migration workflow:**
+```
+1. Developer creates migration file: 0042_add_email_verified_to_users.sql
+2. Migration runs in CI/CD before deploying new code
+3. New code can now use the email_verified column
+```
+
+**Tools:** Alembic (Python/SQLAlchemy), Flyway/Liquibase (Java), Django migrations, Prisma Migrate.
+
+**Safe migration patterns for zero-downtime:**
+
+| Operation | Safe? | Reason |
+|-----------|-------|--------|
+| Add nullable column | Yes | Old code ignores it, new code uses it |
+| Add NOT NULL column | Risky | Old code won't provide the value |
+| Rename column | Risky | Old code uses old name |
+| Add index | Yes (use CONCURRENTLY) | Can be done without locking the table |
+| Drop column | Two-step | First stop using it in code, then drop |
+
+**Key rule:** Never make a change that breaks backward compatibility with the currently deployed code. Migrations and code deployments must be coordinated carefully.
+
+---
+
+### Q213. What is the difference between DELETE, TRUNCATE, and DROP in SQL?
+
+**Answer:**
+
+These three commands all remove data but at very different levels:
+
+| Command | What it removes | Transactional? | Speed | Resets auto-increment? |
+|---------|----------------|----------------|-------|----------------------|
+| `DELETE` | Specific rows (or all with no WHERE) | Yes | Slow (row-by-row) | No |
+| `TRUNCATE` | All rows in a table | No (usually) | Fast (deallocates pages) | Yes |
+| `DROP` | The entire table and its structure | No | Instant | N/A |
+
+```sql
+-- Delete specific rows (can be rolled back)
+DELETE FROM logs WHERE created_at < '2024-01-01';
+
+-- Delete all rows fast (can't easily roll back, resets sequences)
+TRUNCATE TABLE logs;
+
+-- Delete the table itself — schema is gone
+DROP TABLE logs;
+```
+
+**Why TRUNCATE is faster:** `DELETE` logs each row deletion for transaction recovery. `TRUNCATE` just marks the entire storage pages as free — it's one operation regardless of row count.
+
+**When to use which:**
+- `DELETE`: When you need to delete specific rows or need rollback capability
+- `TRUNCATE`: When clearing a table entirely (test data cleanup, reset)
+- `DROP`: When you're removing a table entirely from the schema
+
+---
+
 ## Caching
 
 ---
@@ -1266,6 +1952,143 @@ const top10 = await client.zrevrange("game:scores", 0, 9, "WITHSCORES");
 
 ---
 
+### Q214. What are write-through, write-back, and write-around caching strategies?
+
+**Answer:**
+
+These strategies define *when* data is written to the cache vs. the database.
+
+**Write-through:** Data is written to cache AND database simultaneously on every write.
+- ✅ Cache is always consistent with the database
+- ❌ Every write has two-step latency (cache + DB)
+- Use when: reads are frequent and you need consistency
+
+**Write-back (write-behind):** Data is written to cache only. The cache asynchronously writes to the database later.
+- ✅ Very fast writes (just cache)
+- ❌ Risk of data loss if cache fails before the DB write
+- Use when: write performance is critical and some data loss is acceptable (analytics counters, leaderboards)
+
+**Write-around:** Data is written directly to the database, bypassing the cache. Cache is populated only on the next read.
+- ✅ Prevents caching data that's written once and rarely read
+- ❌ Cache miss on first read after write
+- Use when: data is written often but rarely re-read (log files, large media uploads)
+
+```
+Write-through: Write → [Cache] → [Database]  (synchronous)
+Write-back:    Write → [Cache] → ... → [Database] (async, later)
+Write-around:  Write → [Database]  (cache filled on next read)
+```
+
+---
+
+### Q215. What is a cache hit ratio and how do you measure cache effectiveness?
+
+**Answer:**
+
+**Cache hit ratio** = `cache_hits / (cache_hits + cache_misses)`
+
+A hit is when the requested data is found in the cache. A miss is when it isn't (and you have to fetch from the database).
+
+**Good vs bad:**
+- 90%+ hit ratio: cache is working well
+- Below 60%: cache is providing little benefit, investigate eviction policy or key design
+
+**Why it matters:** If your cache has a 99% hit ratio, you're serving 99% of reads from RAM (sub-millisecond) instead of from disk (milliseconds). For high-traffic systems, this is the difference between 10ms and 100μs average latency.
+
+**Measuring in Redis:**
+```bash
+redis-cli INFO stats | grep -E "keyspace_hits|keyspace_misses"
+# keyspace_hits:1000000
+# keyspace_misses:50000
+# Hit ratio = 1M / (1M + 50K) = 95.2%
+```
+
+**Ways to improve hit ratio:**
+- Increase cache size (more data fits, fewer evictions)
+- Better key design (cache at the right granularity)
+- Increase TTL (data stays cached longer)
+- Pre-warm cache after deployment (load popular data proactively)
+
+---
+
+### Q216. What is distributed caching and how does it differ from local caching?
+
+**Answer:**
+
+**Local (in-process) cache:** Cache lives in the application's own memory. Fast (no network hop), but each app server has its own independent cache.
+
+```
+Server 1: cache = { user:42: {name: "Alice"} }
+Server 2: cache = { user:42: {name: "Alice"} }  ← duplicate!
+```
+
+**Problems:** With 10 servers, you cache the same data 10 times. If user 42 updates their name, only the server that handled the update invalidates its cache — the others serve stale data.
+
+**Distributed cache (e.g., Redis, Memcached):** A dedicated caching layer shared by all application servers.
+
+```
+Server 1 ─┐
+Server 2 ─┼──→ Redis cluster → shared cache
+Server 3 ─┘
+```
+
+**Advantages:** Consistent view of cached data across all servers, cache survives app server restarts, can be scaled independently.
+
+**Trade-offs:** Network latency (typically 0.5–2ms vs. nanoseconds for local cache). For extremely hot data, consider a two-level cache: local L1 for the hottest items + shared Redis for everything else.
+
+---
+
+### Q217. What is cache stampede and how do you prevent it?
+
+**Answer:**
+
+**Cache stampede** (also called dog-pile or thundering herd for caches) occurs when a popular cached item expires. Dozens or hundreds of requests simultaneously miss the cache and all try to recompute the same expensive query at once — overwhelming the database.
+
+```
+Time 0: cache key "top_products" expires
+Time 0.001s: 500 concurrent requests all get a cache miss
+Time 0.001s: All 500 fire the same expensive DB query simultaneously
+→ Database overloaded, latency spikes, potential outage
+```
+
+**Prevention techniques:**
+
+**1. Mutex lock:** Only one request recomputes the value. Others wait.
+```python
+with redis.lock("recompute:top_products", timeout=10):
+    if not redis.get("top_products"):
+        data = db.query(heavy_query)
+        redis.setex("top_products", 3600, data)
+```
+
+**2. Probabilistic early expiration (XFetch):** Slightly before the TTL expires, randomly start refreshing early. Spreads the refresh across time.
+
+**3. Background refresh:** Before the item expires, proactively refresh it in the background. Cache never actually goes empty.
+
+**4. Stale-while-revalidate:** Serve the stale value immediately while refreshing asynchronously.
+
+---
+
+### Q218. What is the difference between an application cache and a CDN cache?
+
+**Answer:**
+
+**Application cache** (Redis, Memcached): Stores computed results, database query outputs, session data. Lives close to your application servers. Access requires a network call within your infrastructure (~0.5ms). Caches dynamic, user-specific, or business-logic-heavy data.
+
+**CDN cache** (CloudFront, Cloudflare, Fastly): Stores static or semi-static assets at edge nodes globally — close to end users. Eliminates round trips across the internet (~200ms saved for cross-continent requests). Caches HTML pages, JS/CSS/images, API responses that are the same for all users.
+
+| Aspect | Application Cache | CDN Cache |
+|--------|-----------------|-----------|
+| Location | Your datacenter | Edge nodes worldwide |
+| Distance from user | 0.5ms (same DC) | 5-30ms (nearest PoP) |
+| What it caches | DB queries, sessions | Static files, public pages |
+| User-specific data | Yes | No (or with Vary header) |
+| Invalidation control | Direct (Redis DEL) | Cache tags, purge API |
+
+**Layered caching strategy:** CDN → application cache → database. A request for a product page might be served by CDN (public page) or application cache (personalized page) before ever hitting the database.
+
+---
+
 ## Scalability & Load Balancing
 
 ---
@@ -1389,6 +2212,123 @@ async function checkRateLimit(userId, maxTokens = 10, refillRate = 1) {
 // X-RateLimit-Reset: 1735689600
 // HTTP 429 Too Many Requests when limit is exceeded
 ```
+
+---
+
+### Q219. What are the different load balancing algorithms?
+
+**Answer:**
+
+**Round Robin:** Requests distributed evenly in order: server 1, 2, 3, 1, 2, 3...
+- Simple, works well when servers are identical and requests are similar in cost
+
+**Weighted Round Robin:** Like round robin, but servers with more capacity get more requests. Server A (8 cores) gets 2x the requests of Server B (4 cores).
+
+**Least Connections:** Route each new request to the server with the fewest active connections.
+- Better than round robin when requests vary significantly in processing time
+
+**Least Response Time:** Route to the server with the lowest current latency + fewest connections.
+- Most sophisticated, keeps performance consistent
+
+**IP Hash:** Hash the client's IP to always route them to the same server.
+- Creates sticky sessions without session affinity configuration
+- Problem: uneven distribution if many clients share an IP (corporate NAT)
+
+**Random:** Route to a randomly selected server. Surprisingly effective at scale — "power of two choices" (pick two random servers, route to the one with fewer connections) outperforms pure random.
+
+**Use in practice:** Nginx and HAProxy default to round robin. Cloud load balancers offer least-connections and IP hash. For most web apps, round robin or least-connections is sufficient.
+
+---
+
+### Q220. What is a database read replica and how does it help with scaling?
+
+**Answer:**
+
+A **read replica** is a copy of your primary database that receives a continuous stream of changes from the primary and can serve read-only queries. Writes still go to the primary.
+
+**How replication works:**
+```
+Primary DB                     Read Replica
+(writes + reads)  → replication → (reads only)
+                     stream
+```
+
+**Why it helps:** Most applications are read-heavy (90%+ reads). By directing reads to replicas, you reduce load on the primary and increase overall read throughput linearly — 3 replicas = roughly 3x read capacity.
+
+**Replication lag:** Replicas are *eventually consistent*. There's typically a small delay (milliseconds to seconds) between a write on the primary and it appearing on the replica. For "read your own writes" scenarios, route the user's subsequent read back to the primary.
+
+**Use cases:**
+- Analytics queries — run long reports on a replica, don't slow down production
+- Reporting dashboards — replicas handle dashboard queries
+- Search — export data from replica to Elasticsearch
+
+**Cloud examples:** AWS RDS Read Replicas, Google Cloud SQL Read Replicas, PostgreSQL streaming replication.
+
+---
+
+### Q221. What is auto-scaling and what are the different types?
+
+**Answer:**
+
+**Auto-scaling** automatically adjusts the number of running instances based on load, removing the need for manual capacity planning.
+
+**Types:**
+
+**Reactive/Dynamic scaling:** Responds to current metrics (CPU usage > 70% for 5 minutes → add 2 servers). Most common type.
+
+**Scheduled scaling:** Scale up before a known event. "Every weekday at 8am, add 10 servers. At 10pm, remove them." Good for predictable traffic patterns.
+
+**Predictive scaling (AWS, GCP feature):** Uses ML to analyze historical patterns and scale proactively, before the load spike hits.
+
+**Target tracking:** Define a target metric ("keep average CPU at 50%") and auto-scaling maintains it automatically.
+
+**Scale-in vs scale-out:** Adding instances is fast (minutes). Removing instances requires careful draining (finish in-flight requests first). Overly aggressive scale-in can cause oscillation (scale in → CPU spikes → scale out → scale in...).
+
+**Key consideration:** Stateless services auto-scale well. Stateful services (with local data) are harder — you need to drain state before removing an instance, or use distributed state storage.
+
+---
+
+### Q222. What is geographic load balancing and when do you use it?
+
+**Answer:**
+
+**Geographic load balancing** (GeoDNS) routes users to the datacenter geographically closest to them, reducing latency and complying with data residency requirements.
+
+**How it works:** DNS returns different IP addresses based on the user's geographic location. A user in Europe gets the IP of the EU datacenter; a user in Asia gets the APAC datacenter.
+
+```
+User in Germany → DNS resolves api.example.com → 10.0.1.1 (EU datacenter)
+User in Tokyo   → DNS resolves api.example.com → 10.0.2.1 (APAC datacenter)
+```
+
+**Latency improvement:** A user in Tokyo accessing a US-only service experiences ~150ms round-trip latency. Adding a Tokyo datacenter reduces this to ~5ms — a 30x improvement for every request.
+
+**Failover:** If one region goes down, GeoDNS can redirect traffic to the next closest region (health checks monitor each region's availability).
+
+**Data challenges:** Geographic distribution means you need to replicate data across regions. This introduces replication lag and potential consistency issues. Write-heavy workloads need careful design (global databases, multi-master replication, or routing writes to a home region).
+
+**Tools:** AWS Route 53 Geolocation routing, Cloudflare Load Balancing, Google Cloud's global load balancer.
+
+---
+
+### Q223. What is the difference between stateful and stateless load balancing?
+
+**Answer:**
+
+**Stateless load balancing:** The load balancer doesn't remember which server handled previous requests from a client. Each request is routed independently (round robin, least-connections).
+
+- ✅ Simple, scalable, no shared state
+- ✅ Server can be removed/added without affecting routing
+- Requires: application servers must be stateless (session in Redis, not local memory)
+
+**Stateful load balancing (sticky sessions):** The load balancer tracks which server each client should go to and always routes them there (via a cookie or IP hash).
+
+- ✅ Works for legacy apps that store session in local memory
+- ❌ Server failure loses that client's session
+- ❌ Uneven load if some users are more active than others
+- ❌ Hard to scale down (can't remove a server with active sessions)
+
+**Modern recommendation:** Build stateless application servers. Store sessions in Redis. Use stateless load balancing. This is the only architecture that scales horizontally without constraints.
 
 ---
 
@@ -1571,6 +2511,164 @@ payment-service.default.svc.cluster.local → always routes to healthy pods
 
 ---
 
+### Q224. What is the bulkhead pattern in microservices?
+
+**Answer:**
+
+The **bulkhead pattern** isolates failures by partitioning resources so that a failure in one part doesn't cascade and exhaust resources for the whole system. The name comes from the watertight compartments in ships — if one compartment floods, others stay dry.
+
+**The problem without bulkheads:**
+```
+All services share one thread pool:
+Service A gets slow → fills all 100 threads
+→ Service B, C, D also starve → all services fail
+```
+
+**With bulkheads:**
+```
+Service A gets its own thread pool: 30 threads
+Service B gets its own thread pool: 30 threads
+Service C gets its own thread pool: 40 threads
+→ Service A floods its 30 threads
+→ Service B and C continue normally with their pools
+```
+
+**Implementation patterns:**
+- **Thread pool isolation:** Each downstream service call gets a dedicated thread pool (Hystrix popularized this)
+- **Semaphore isolation:** Limit concurrent calls to a service via a semaphore (lighter than threads)
+- **Process isolation:** Run risky services in separate processes/containers
+
+**Combined with circuit breaker:** Bulkhead limits concurrent calls; circuit breaker stops calling a failing service entirely. Used together they prevent both overload and cascading failures.
+
+---
+
+### Q225. What is API versioning and what are the different strategies?
+
+**Answer:**
+
+**API versioning** is the practice of managing changes to an API while maintaining backward compatibility for existing clients.
+
+**Strategies:**
+
+**1. URL path versioning** (most common):
+```
+/api/v1/users
+/api/v2/users
+```
+Pros: Very explicit, easy to test. Cons: URL bloat, hard to deprecate old versions.
+
+**2. Query parameter versioning:**
+```
+/api/users?version=2
+```
+Pros: URL stays clean. Cons: Easy to forget to pass the parameter.
+
+**3. Header versioning:**
+```
+GET /api/users
+Accept: application/vnd.myapi.v2+json
+```
+Pros: Cleanest URLs. Cons: Harder to test in browser, less discoverable.
+
+**4. Header version field:**
+```
+GET /api/users
+API-Version: 2
+```
+
+**Best practice:** Use URL versioning for public APIs (developers can see the version). Use header versioning for internal APIs where you control all clients.
+
+**Versioning strategy:** Aim to be backward-compatible (add fields, don't remove them). Only bump the major version when making breaking changes. Support at least 2 versions simultaneously during transitions, with a clear deprecation timeline.
+
+---
+
+### Q226. What is CQRS (Command Query Responsibility Segregation)?
+
+**Answer:**
+
+**CQRS** separates the model used to *update* data (Commands) from the model used to *read* data (Queries). Instead of one model doing everything, you have two optimized for their respective jobs.
+
+**Traditional approach:** One model, one database. The same table that accepts writes also serves reads.
+
+**CQRS approach:**
+```
+Commands (writes) → Write Model → Write DB (normalized, for integrity)
+                                         ↓ async replication
+Queries (reads)  ← Read Model  ← Read DB (denormalized, for speed)
+```
+
+**Why denormalize for reads?** Normalized schemas require JOINs. If your dashboard needs user + orders + products joined, you can store that pre-joined in the read model for instant lookup.
+
+**Benefits:**
+- Read and write models can scale independently
+- Read model can be optimized exactly for the UI's needs
+- Write model can focus on business logic and validation
+
+**Complexity cost:** Two models to maintain, eventual consistency between write DB and read DB (the replication isn't instant), harder to debug.
+
+**Use when:** High read-to-write ratio, complex reporting needs, or different scaling requirements for reads vs. writes.
+
+---
+
+### Q227. What is the Backend for Frontend (BFF) pattern?
+
+**Answer:**
+
+**BFF (Backend for Frontend)** is a pattern where you create a separate backend service for each type of frontend client (web, iOS, Android). Each BFF is tailored to its client's specific needs.
+
+**The problem it solves:** A generic API must return all possible fields, forcing every client to filter what it needs. A mobile app might only need 3 fields; the web app needs 20. The mobile app makes multiple requests where one would suffice.
+
+```
+Without BFF:
+Mobile App  → Generic API → too much data, too many requests
+Web App     → Generic API → too much data
+Desktop App → Generic API → too much data
+
+With BFF:
+Mobile App  → Mobile BFF  → aggregates microservices, returns only mobile-needed fields
+Web App     → Web BFF     → returns web-specific payload
+```
+
+**Benefits:**
+- Each BFF can implement client-specific auth, caching, field filtering
+- Teams can own their BFF independently
+- Reduces over-fetching (mobile doesn't download unused data)
+- Easier to optimize for network conditions (mobile vs. fiber)
+
+**Trade-offs:** More services to maintain, code duplication between BFFs (handle with shared libraries). Works best when different frontends have genuinely different data needs.
+
+---
+
+### Q228. What is an idempotency key in API design?
+
+**Answer:**
+
+An **idempotency key** is a unique identifier (UUID) that the client attaches to a request. The server uses it to deduplicate retries — if it sees the same key twice, it returns the original response instead of processing the request again.
+
+**Why it's needed:** Networks are unreliable. A `POST /payments` request might succeed on the server but the response gets lost in transit. Without idempotency, the client can't safely retry — it might charge the user twice.
+
+```
+Client:
+POST /payments
+Idempotency-Key: 7f3bca1e-91e4-4c8e-8b9d-3a5f2c1d0e9f
+Body: { "amount": 50, "currency": "USD" }
+
+Server first call: Processes payment, stores key → { "id": "pay_123", "status": "success" }
+Server second call (retry, same key): Returns stored response immediately, no new charge
+Server third call (new key): New payment created
+```
+
+**Server implementation:**
+1. Check if key exists in a key-value store (Redis works well)
+2. If yes: return stored response
+3. If no: process request, store response with the key, return response
+
+**TTL on keys:** Store idempotency keys for 24–48 hours (long enough for retries, not forever).
+
+**Beyond payments:** Idempotency keys are useful for any non-idempotent API: sending emails, creating orders, triggering webhooks.
+
+---
+
 ## Message Queues & Async Systems
 
 ---
@@ -1655,6 +2753,168 @@ Key difference:
 Queue: Each message processed by ONE consumer
 Stream: Each message can be processed by MANY consumers
 ```
+
+---
+
+### Q229. What is a dead letter queue (DLQ) and why is it important?
+
+**Answer:**
+
+A **dead letter queue** is a separate queue where messages are sent when they cannot be processed successfully — after too many retry attempts, exceeding a maximum message age, or being explicitly rejected.
+
+**Without a DLQ:**
+```
+Message fails to process → retry 3 times → still fails → message is dropped forever
+→ You have no idea what failed or why
+```
+
+**With a DLQ:**
+```
+Message fails to process → retry 3 times → still fails → moved to DLQ
+→ Engineers can inspect DLQ, find the bad messages, fix the bug, replay them
+```
+
+**Common reasons messages land in the DLQ:**
+- Malformed payload (JSON parsing error)
+- Dependent service is down (database, external API)
+- Business logic validation failure
+- Message too large
+
+**Best practices:**
+- Set up alerts when DLQ depth increases (means something is broken)
+- Log the failure reason before moving to DLQ
+- Build a "replay" mechanism to re-process DLQ messages after fixing the bug
+- Set retention period long enough to investigate (7-14 days)
+
+**Supported by:** AWS SQS, RabbitMQ, Azure Service Bus, and most major message queue systems.
+
+---
+
+### Q230. What is the difference between pub/sub and point-to-point messaging?
+
+**Answer:**
+
+**Point-to-point (queue):** Each message is consumed by exactly **one** consumer. Messages sit in a queue; multiple consumers compete, but each message is claimed by only one.
+
+```
+Producer → [Queue] → Consumer A (gets message 1)
+                   → Consumer B (gets message 2)
+                   → Consumer A (gets message 3)
+```
+
+**Use case:** Task distribution. "Process this order" — you want one worker to process each order, not multiple workers processing the same order simultaneously.
+
+**Pub/Sub (publish-subscribe):** Each message is delivered to **all** subscribers. Multiple consumers each get their own copy.
+
+```
+Publisher → [Topic] → Consumer A (gets every message)
+                    → Consumer B (gets every message)
+                    → Consumer C (gets every message)
+```
+
+**Use case:** Event broadcasting. "User signed up" — the email service, analytics service, and onboarding service all need to react independently to the same event.
+
+| Aspect | Point-to-Point | Pub/Sub |
+|--------|---------------|---------|
+| Consumers per message | One | Many |
+| Typical use | Task queues | Event notifications |
+| Examples | SQS, RabbitMQ queues | Kafka topics, SNS, Google Pub/Sub |
+
+Kafka supports both: consumer groups (one consumer per group gets each message) and multiple groups (each group gets every message).
+
+---
+
+### Q231. What is RabbitMQ and how does it differ from Kafka?
+
+**Answer:**
+
+Both are message brokers, but optimized for different use cases:
+
+**RabbitMQ:**
+- Traditional message broker — focus on routing, delivery guarantees, and consumer acknowledgment
+- Messages are deleted once consumed and acknowledged
+- Supports complex routing (exchanges, bindings, routing keys)
+- Low latency for small messages (~1ms)
+- Best for: task queues, RPC patterns, microservice communication
+
+**Kafka:**
+- Distributed event log — messages are retained on disk for a configurable period
+- Consumers can replay from any point in history
+- Optimized for very high throughput (millions of events/sec)
+- Best for: event streaming, audit logs, feeding multiple downstream systems, real-time analytics
+
+| Aspect | RabbitMQ | Kafka |
+|--------|----------|-------|
+| Message retention | Deleted after consumed | Retained (days/weeks) |
+| Ordering | Per queue | Per partition |
+| Throughput | High (100K/s) | Very high (millions/s) |
+| Replay | No | Yes |
+| Complexity | Lower | Higher |
+| Use case | Task queues | Event streaming |
+
+**Rule of thumb:** Use RabbitMQ when you need smart routing and acknowledgment. Use Kafka when you need high throughput, replay, or multiple consumers processing the same event stream.
+
+---
+
+### Q232. What is message ordering and how do you guarantee it?
+
+**Answer:**
+
+Message ordering means consumers receive messages in the same sequence they were produced. This matters for events that have causal dependencies (e.g., "create account" must be processed before "update account").
+
+**Why it's hard in distributed systems:**
+- Multiple producers writing concurrently
+- Multiple partitions/queues handling different messages
+- Network delays, retries, and reordering
+
+**Kafka's approach:** Ordering is guaranteed *within a partition*. Messages with the same partition key always go to the same partition and are consumed in order.
+
+```python
+# Kafka producer
+producer.send(
+    topic="user-events",
+    key=str(user_id).encode(),   # same user_id → same partition → ordered
+    value=event_data
+)
+```
+
+All events for `user_id=42` go to the same partition → processed in order.
+
+**SQS FIFO queues:** Guarantee order using a message group ID — same concept as Kafka partition keys.
+
+**Trade-off:** Strict global ordering requires a single partition (or queue) → limits throughput. Per-key ordering (Kafka partitions) scales well while preserving the ordering that actually matters (events for the same entity).
+
+---
+
+### Q233. What is the outbox pattern for reliable messaging?
+
+**Answer:**
+
+The **outbox pattern** solves the problem of atomically persisting a database change AND publishing a message. Without it, you might save to the DB but fail to send the message (or vice versa).
+
+**The problem:**
+```
+1. Save order to DB  ✅
+2. Publish "order.created" to Kafka  ❌ (Kafka briefly down)
+→ Order saved, event never sent → downstream services never notified
+```
+
+**Outbox pattern solution:**
+```
+1. BEGIN transaction
+2. Save order to orders table
+3. Save event to outbox table (same transaction)
+4. COMMIT  ← both happen atomically
+
+Separate process:
+5. Poll outbox table → find unpublished events
+6. Publish to Kafka
+7. Mark as published in outbox table
+```
+
+**Why it works:** Steps 2 and 3 are in the same database transaction — they either both succeed or both fail. The outbox table is the source of truth for "events to be published."
+
+**Change Data Capture (CDC) variant:** Instead of polling, use a CDC tool (Debezium) to watch the database's transaction log and automatically forward outbox events to Kafka — more efficient than polling.
 
 ---
 
@@ -1840,6 +3100,163 @@ function escapeHtml(str) {
 // Content Security Policy header to prevent inline scripts:
 // Content-Security-Policy: default-src 'self'; script-src 'self'
 ```
+
+---
+
+### Q234. What is CSRF (Cross-Site Request Forgery) and how do you prevent it?
+
+**Answer:**
+
+**CSRF** is an attack where a malicious website tricks a logged-in user's browser into making an unwanted request to another site where they're authenticated.
+
+**How it works:**
+```
+1. User logs into bank.com (browser stores session cookie)
+2. User visits evil.com
+3. evil.com contains: <img src="https://bank.com/transfer?to=hacker&amount=1000">
+4. Browser automatically includes the bank.com session cookie
+5. Bank processes the transfer as if the user intended it
+```
+
+**Why it works:** Browsers automatically send cookies with every request to a domain, regardless of which site initiated the request.
+
+**Prevention techniques:**
+
+**CSRF tokens:** Server embeds a random secret token in each form. Server validates the token on submission — attackers can't know the token.
+```html
+<form action="/transfer" method="POST">
+  <input type="hidden" name="csrf_token" value="a8f3k2p9...">
+  ...
+</form>
+```
+
+**SameSite cookie attribute:** `SameSite=Strict` or `SameSite=Lax` tells the browser not to send cookies on cross-site requests — the simplest and most modern fix.
+
+**Check Origin/Referer headers:** Reject requests where the Origin doesn't match your domain.
+
+**Note:** CSRF only affects cookie-based auth. APIs using JWT in Authorization headers are not vulnerable (the header isn't auto-sent by browsers).
+
+---
+
+### Q235. What is encryption at rest vs encryption in transit?
+
+**Answer:**
+
+**Encryption in transit:** Data is encrypted while moving between two systems — over a network, API call, or database connection. Prevents eavesdropping on the wire.
+
+- Implemented via TLS/HTTPS for web traffic
+- Also applies to database connections (`sslmode=require`), messaging queues, gRPC
+- Without it: anyone on the network path (ISP, coffee shop Wi-Fi) can read the data
+
+**Encryption at rest:** Data is encrypted while stored on disk — databases, object storage (S3), backups, logs.
+
+- Without it: someone who steals a hard drive gets all the data in plaintext
+- Implemented via AES-256 typically
+- Cloud providers offer transparent encryption at rest (AWS S3 SSE, RDS encryption)
+
+**Key management:** The encryption is only as secure as how you manage the keys. Use a dedicated key management service (AWS KMS, HashiCorp Vault) rather than storing keys alongside the data.
+
+| | Transit | At Rest |
+|--|---------|---------|
+| Protects against | Network eavesdropping, MITM | Physical theft, unauthorized storage access |
+| How | TLS/HTTPS | AES-256, transparent disk encryption |
+| When needed | Always | For sensitive data |
+
+**Both are needed:** Transit encryption protects data in motion; at-rest encryption protects data that's sitting on a server.
+
+---
+
+### Q236. What is zero-trust security architecture?
+
+**Answer:**
+
+**Zero-trust** is a security model based on the principle: **"never trust, always verify."** It assumes that no user, device, or network — including internal corporate networks — is inherently trustworthy.
+
+**Traditional model:** "Trust but verify." Once inside the corporate VPN/network, users and services could freely communicate.
+
+**The problem:** If an attacker compromises one internal machine, they can move laterally across the network freely.
+
+**Zero-trust principles:**
+
+1. **Verify explicitly:** Authenticate and authorize every request based on identity, device health, location, and context — not just network location
+2. **Least privilege:** Grant only the minimum permissions needed
+3. **Assume breach:** Design as if attackers are already inside. Segment everything.
+
+**In practice:**
+- Every service-to-service call requires authentication (mTLS or service tokens)
+- Employees access internal apps through identity-aware proxies (not open VPN)
+- Short-lived credentials instead of long-lived passwords
+- Continuous verification (re-check auth, not just at login)
+
+**Tools:** Google BeyondCorp, Cloudflare Access, Tailscale, HashiCorp Vault.
+
+---
+
+### Q237. What is a man-in-the-middle (MITM) attack and how do TLS certificates prevent it?
+
+**Answer:**
+
+A **MITM attack** occurs when an attacker secretly intercepts and potentially alters communication between two parties who believe they're communicating directly.
+
+**Without TLS:**
+```
+Browser → [Attacker intercepts] → Server
+Browser thinks it's talking to the server
+Attacker reads everything, can modify responses
+```
+
+**How TLS certificates prevent it:**
+
+1. Server presents a certificate signed by a trusted Certificate Authority (CA)
+2. Browser verifies the certificate is signed by a CA it trusts (pre-installed in OS/browser)
+3. Certificate contains the server's public key and domain name
+4. Browser verifies the domain matches what it's connecting to
+5. An attacker can't forge the certificate — they don't have the CA's private key
+
+```
+Browser → "Who are you?"
+Server  → "I'm bank.com [certificate signed by DigiCert]"
+Browser → verifies DigiCert's signature (DigiCert is pre-trusted)
+         → confirms domain matches
+         → establishes encrypted channel
+```
+
+**TLS pinning (mobile apps):** The app has a hardcoded copy of the expected certificate. Even if an attacker installs a trusted CA on the device (to intercept traffic), the app rejects certificates that don't match the pin.
+
+---
+
+### Q238. When do you use API keys vs JWT vs session tokens?
+
+**Answer:**
+
+**Session tokens (cookies):**
+- Server stores session data and issues an opaque token (UUID)
+- Every request: server looks up the token in a session store (Redis/DB)
+- ✅ Easy to invalidate (delete from session store)
+- ❌ Requires session store lookup on every request
+- **Use for:** Traditional web apps, when you need instant revocation
+
+**JWT (JSON Web Token):**
+- Server signs a token containing claims (user ID, roles, expiry)
+- Every request: server verifies the signature without a DB lookup
+- ✅ Stateless — scales horizontally without a session store
+- ❌ Hard to invalidate before expiry (use short expiry + refresh tokens)
+- **Use for:** APIs, microservices, mobile apps
+
+**API keys:**
+- Long-lived opaque tokens, often static
+- Associated with an application/service, not a human user
+- Easy to rate-limit and audit per key
+- ❌ Not time-limited by default — if leaked, dangerous until manually revoked
+- **Use for:** Machine-to-machine API access, developer credentials, third-party integrations
+
+**Quick reference:**
+| | Session token | JWT | API key |
+|--|--------------|-----|---------|
+| Who uses it | Users (web) | Users/services | Services/bots |
+| Stateful? | Yes | No | Usually yes |
+| Expiry | Session-based | Short TTL | Long-lived |
+| Revocation | Instant | Hard | Manual |
 
 ---
 
@@ -2800,6 +4217,149 @@ function isEnabledForUser(flag, userId) {
 // → Instantly reverts to legacy checkout for all users
 // → No deployment needed! Takes effect in seconds.
 ```
+
+---
+
+### Q239. How would you design a distributed file storage system like Dropbox?
+
+**Answer:**
+
+**Core requirements:** Store files reliably, sync across devices, share with others, handle large files, support billions of files.
+
+**Key components:**
+
+**1. Chunking:** Split files into fixed-size chunks (4MB). Store each chunk separately with its content hash as the ID.
+- Deduplication: if two users upload the same file, only one copy stored
+- Delta sync: only upload changed chunks when a file is modified
+
+**2. Metadata service:** Database tracking (user → files → chunks + offsets). Fast lookup. PostgreSQL for metadata, S3-compatible storage for actual chunks.
+
+**3. Upload flow:**
+```
+Client → chunk file → upload chunks to object storage (S3)
+       → send metadata (file name, chunk IDs, sizes) to metadata service
+       → metadata service records mapping
+```
+
+**4. Sync service:** Notification when files change. Use long-polling or WebSockets to push sync events to connected clients. Clients pull only the changed chunks.
+
+**5. Conflict resolution:** Last-write-wins (simple) or create a "conflicted copy" (Dropbox's approach).
+
+**Scale numbers:** 500M users, 100M active/day. Peak 1M uploads/min. Object storage scales horizontally (S3 handles this). Metadata DB needs sharding by user ID.
+
+---
+
+### Q240. What is the two-phase commit (2PC) protocol and what are its limitations?
+
+**Answer:**
+
+**2PC** is a protocol that ensures a distributed transaction is either committed on *all* participating nodes or rolled back on all of them — atomicity across multiple databases or services.
+
+**Phases:**
+
+**Phase 1 — Prepare:** Coordinator asks all participants: "Can you commit?"
+- Each participant writes to its WAL (so it can recover), then replies "Yes" or "No"
+
+**Phase 2 — Commit/Abort:** If all say "Yes" → coordinator sends Commit to all. If any says "No" → coordinator sends Abort to all.
+
+```
+Coordinator: "Prepare to commit transfer $100 from DB-A to DB-B"
+DB-A: "Ready"
+DB-B: "Ready"
+Coordinator: "Commit!"
+→ Both commit atomically
+```
+
+**Limitations:**
+
+**Blocking protocol:** If the coordinator crashes after Phase 1 but before Phase 2, participants are stuck in a prepared state — they hold locks and can't proceed until the coordinator recovers.
+
+**Single point of failure:** The coordinator is a bottleneck and failure point.
+
+**Performance:** Two network round trips + locks held between phases = high latency.
+
+**Modern alternative:** The **Saga pattern** — break the distributed transaction into a sequence of local transactions with compensating actions for rollback. More complex but avoids blocking.
+
+---
+
+### Q241. How would you design a real-time notification system at scale?
+
+**Answer:**
+
+**Requirements:** Millions of users, deliver notifications instantly, support push (mobile), in-app (web), email, and SMS.
+
+**Architecture:**
+
+**1. Event producer:** Any service publishes an event to Kafka:
+```json
+{ "type": "order.shipped", "user_id": 42, "data": {...} }
+```
+
+**2. Notification service:** Consumes events, determines which notification channels to use (user preferences), formats messages per channel.
+
+**3. Delivery layer:**
+- **In-app (web):** WebSocket connection per active user. Notification service looks up which server holds user 42's connection, sends via internal pub/sub (Redis pub/sub or a message bus).
+- **Mobile push:** Apple APNS, Google FCM — batch and send push notifications.
+- **Email:** SES, SendGrid — queue emails, rate-limit per user.
+- **SMS:** Twilio — expensive, only for critical notifications.
+
+**4. Connection management:** With millions of concurrent WebSocket connections, use a dedicated connection layer. Store `user_id → server_id` mapping in Redis. When pushing to user 42, look up which server holds their connection, route there.
+
+**5. Delivery guarantee:** Store notification in DB before delivering. Mark as delivered on acknowledgment. Retry undelivered after timeout.
+
+**Scale consideration:** 10M active users × 1 WebSocket connection = 10M connections. Use servers with high connection limits (`ulimit`) and async I/O (Node.js, Go).
+
+---
+
+### Q242. What is geo-replication in distributed databases?
+
+**Answer:**
+
+**Geo-replication** means maintaining copies of data in multiple geographic regions simultaneously — so users get low-latency access regardless of location, and the system survives regional outages.
+
+**Multi-region read replicas:** One primary region handles writes. Other regions have read replicas. Writes replicate asynchronously.
+- ✅ Simple, low write latency
+- ❌ Replication lag (reads in remote regions might be seconds behind)
+- ❌ If primary region fails, manual or automatic failover needed
+
+**Multi-master (active-active):** Multiple regions accept both reads and writes. Changes replicate to all other regions.
+- ✅ Low latency writes everywhere
+- ❌ Conflict resolution needed when two regions write the same data simultaneously
+- ❌ Complex to implement correctly
+
+**Conflict resolution strategies:**
+- Last-write-wins (timestamp-based) — simple but can lose updates
+- Vector clocks — detect conflicts, let application resolve
+- CRDT (Conflict-free Replicated Data Types) — data structures that auto-merge
+
+**Products that handle this:** AWS Aurora Global Database (read replicas), CockroachDB (multi-master), Google Spanner (globally distributed with external consistency), Cassandra (configurable multi-master).
+
+---
+
+### Q243. How would you design a distributed task scheduler (like cron at scale)?
+
+**Answer:**
+
+**Requirements:** Schedule millions of tasks (one-time and recurring), execute at specified times, handle failures, avoid duplicate execution.
+
+**Core challenges:**
+1. **Clock synchronization:** Which node decides "it's time to run this"?
+2. **Exactly-once execution:** With multiple scheduler nodes, two might try to run the same task.
+3. **Fault tolerance:** What if the worker running a task crashes mid-execution?
+
+**Architecture:**
+
+**1. Task store:** Database with `(task_id, schedule, next_run_at, status)`. Index on `next_run_at` for efficient polling.
+
+**2. Scheduler (leader-elected):** One node at a time (using distributed locking via ZooKeeper/Redis) polls for tasks due in the next minute. Uses optimistic locking (atomic `UPDATE ... WHERE status='pending' AND next_run_at <= NOW()`) to claim tasks — prevents double execution.
+
+**3. Worker pool:** Claimed tasks are pushed to a Kafka/SQS queue. Workers pull from the queue and execute.
+
+**4. Heartbeat and timeout:** Workers send heartbeats while executing. If a worker dies, the heartbeat stops, and a monitor reclaims the task after a timeout.
+
+**5. Recurring tasks:** After completion, calculate and set the next `next_run_at`.
+
+**Existing solutions:** AWS EventBridge Scheduler, Airflow, Celery beat, Temporal.io — use these before building custom.
 
 ---
 

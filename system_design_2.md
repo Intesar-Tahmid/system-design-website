@@ -444,6 +444,144 @@ git push
 
 ---
 
+### Q244. What is configuration management and how does it differ from Infrastructure as Code?
+
+**Answer:**
+
+**Infrastructure as Code (IaC)** provisions resources — it creates the server, network, and database. Tools: Terraform, CloudFormation, Pulumi.
+
+**Configuration management** configures software on already-running servers — installs packages, sets config files, manages services. Tools: Ansible, Chef, Puppet, SaltStack.
+
+```
+IaC:               "Create a VM with 8GB RAM on AWS"
+Config management: "On that VM, install Python 3.11, configure nginx, deploy our app"
+```
+
+**Modern convergence:** With containers and immutable infrastructure, configuration management has become less necessary. Instead of configuring servers in-place, you bake the configuration into a Docker image at build time and redeploy. But config management is still widely used for bare-metal servers, legacy environments, and cases where you need to manage the OS itself.
+
+**Ansible (most common today):**
+```yaml
+- name: Install and start nginx
+  hosts: webservers
+  tasks:
+    - apt: name=nginx state=present
+    - service: name=nginx state=started enabled=yes
+```
+
+Ansible is agentless (uses SSH), making it lower operational overhead than Chef or Puppet.
+
+---
+
+### Q245. What is immutable infrastructure and why does it improve reliability?
+
+**Answer:**
+
+**Immutable infrastructure** means once a server is deployed, it is never modified. If you need a config change or software update, you build a new image and replace the old server — you never SSH in and change things.
+
+**Traditional (mutable) approach:**
+```
+Deploy server → SSH in → install packages → edit configs → run app
+→ Over time: "configuration drift" — servers that started identical slowly diverge
+→ "Works on my server but not on prod" problem
+```
+
+**Immutable approach:**
+```
+Build Docker image (or AMI) → test it → deploy it → never touch it
+→ If you need changes: build new image → deploy → terminate old
+→ Every server is identical to the tested artifact
+```
+
+**Benefits:**
+- **Reproducibility:** Same image everywhere — dev, staging, prod
+- **Rollback:** Previous image is still available; redeploy instantly
+- **No configuration drift:** Can't diverge if you never modify
+- **Auditability:** Git history of Dockerfile shows every change
+
+**This is why containers won:** Docker images are the canonical example of immutable infrastructure. The image is built once, tested once, and deployed identically everywhere.
+
+---
+
+### Q246. What is a VPC and how does network isolation work in the cloud?
+
+**Answer:**
+
+A **VPC (Virtual Private Cloud)** is your own isolated private network within a public cloud. You control IP ranges, subnets, routing tables, and firewall rules — isolated from other customers' networks.
+
+**Subnets:**
+- **Public subnet:** Has a route to an Internet Gateway. Resources here are reachable from the internet (load balancers, NAT gateways).
+- **Private subnet:** No direct internet route. Resources here (databases, app servers) can only be accessed from within the VPC or via NAT for outbound connections.
+
+```
+Internet
+    ↓
+Internet Gateway
+    ↓
+Public Subnet: Load Balancer (10.0.1.0/24)
+    ↓ (only internal traffic)
+Private Subnet: App Servers (10.0.2.0/24)
+    ↓ (only internal traffic)
+Private Subnet: Databases (10.0.3.0/24)
+```
+
+**Security Groups:** Virtual firewalls attached to individual instances. "Allow port 5432 from 10.0.2.0/24 only" — database only accepts connections from the app subnet.
+
+**VPC Peering:** Connect two VPCs so their private IP ranges can communicate — used to connect dev and prod VPCs, or connect to a partner's infrastructure.
+
+---
+
+### Q247. What is multi-cloud vs hybrid cloud strategy?
+
+**Answer:**
+
+**Multi-cloud:** Using services from multiple public cloud providers (AWS + GCP + Azure) simultaneously.
+- ✅ Avoid vendor lock-in
+- ✅ Use best-of-breed services (GCP for ML, AWS for everything else)
+- ❌ Operational complexity — different APIs, tooling, certifications
+- ❌ Data egress costs for moving data between clouds
+
+**Hybrid cloud:** Mix of on-premises (your own datacenter) and public cloud.
+- ✅ Sensitive data stays on-premises (compliance, regulations)
+- ✅ Existing datacenter investment isn't wasted
+- ❌ Requires private connectivity (VPN or Direct Connect) between on-prem and cloud
+- ❌ More complex networking and security
+
+**When each is relevant:**
+- Regulated industries (healthcare, finance): hybrid cloud for data that can't leave premises
+- Large enterprises: multi-cloud to avoid single-vendor dependency
+- Most startups and modern companies: single cloud (simpler, cheaper, faster)
+
+**Practical reality:** Many "multi-cloud" companies are simply on one main cloud (AWS) with one specific service on another (GCP's BigQuery for analytics). True workload portability across clouds is expensive to maintain.
+
+---
+
+### Q248. What is a service mesh and what does it actually do?
+
+**Answer:**
+
+A **service mesh** is an infrastructure layer that handles service-to-service communication in a microservices system. It adds capabilities like TLS, retries, circuit breaking, and observability to every service call — without changing any application code.
+
+**How it works (sidecar proxy pattern):**
+Every service gets a sidecar proxy (Envoy is the most common). All network traffic goes through the sidecar, not directly to the service.
+
+```
+Service A → Envoy sidecar A → [network] → Envoy sidecar B → Service B
+                          ↑ handles TLS, retries, metrics, tracing
+```
+
+**What a service mesh gives you automatically:**
+- **mTLS everywhere:** All service-to-service calls encrypted and authenticated
+- **Retries and timeouts:** Configured centrally, not per-service
+- **Circuit breaking:** Stop calling failing services
+- **Distributed tracing:** Every hop tagged with the same trace ID
+- **Traffic shaping:** Route 10% of requests to a canary version
+
+**Popular service meshes:** Istio, Linkerd, Consul Connect.
+
+**Cost:** Service meshes add latency (one extra network hop per sidecar), memory overhead (one proxy per pod), and significant operational complexity. Only worth it when managing dozens of services where the consistency of cross-cutting concerns matters.
+
+---
+
 ## CI/CD Pipelines
 
 ---
@@ -701,6 +839,160 @@ Scenario if bug detected:
 ├─ Alert sent: "Canary rollback: error_rate too high"
 ├─ Investigate the bug, fix, and retry
 ```
+
+---
+
+### Q249. What is trunk-based development and why does it enable faster CI/CD?
+
+**Answer:**
+
+**Trunk-based development (TBD)** is a branching strategy where all developers commit directly to a single shared branch (the "trunk" or "main"). Feature branches are either avoided or kept very short-lived (< 1 day).
+
+**Contrast with GitFlow:**
+```
+GitFlow:      feature/big-feature (lives 2 weeks) → merge conflicts hell → slow CI
+Trunk-based:  main ← small commits multiple times/day → always releasable
+```
+
+**Why it enables fast CI/CD:**
+- No long-lived branches = no big, painful merges
+- Main branch is always in a deployable state
+- CI runs on every commit to main — fast feedback
+- Continuous deployment becomes practical
+
+**But what about incomplete features?** Use **feature flags** to hide half-built features from users while the code is already in production.
+
+```python
+if feature_flags.enabled("new-checkout-flow", user_id):
+    render_new_checkout()
+else:
+    render_old_checkout()
+```
+
+Code merges daily; feature launches when the flag is toggled — decoupling code deployment from feature release.
+
+**Used by:** Google, Facebook, and most elite engineering organizations. The evidence strongly supports TBD + feature flags over long-lived branches.
+
+---
+
+### Q250. What is a rollback strategy and what are the different types?
+
+**Answer:**
+
+A **rollback** reverts a production system to a previous known-good state after a failed deployment or incident.
+
+**Types:**
+
+**Redeploy previous version:** Trigger the CI/CD pipeline to deploy the previous artifact. Simple, reliable, but takes the full deployment time (minutes).
+
+**Canary rollback:** During a canary deployment, shift traffic back to the stable version. Near-instant if your load balancer can reroute in seconds.
+
+**Feature flag rollback:** Toggle the feature flag off — the old code path activates instantly for all users. No deployment needed. Fastest option for features behind flags.
+
+**Database rollback:** The hardest part. If the deployment ran migrations, rolling back the app doesn't undo schema changes. Strategies:
+- Write migrations that are backward-compatible (additive only)
+- Keep the old column during transition, remove in a later migration
+- Maintain explicit "down" migrations
+
+**Blue-green rollback:** Switch DNS/load balancer back to the "blue" environment still running the old version. Near-instant if using DNS, minutes if using health-check-based switching.
+
+**Best practice:** Define your rollback plan *before* deploying. Know which type you're using. Set a maximum decision time (e.g., "if error rate > 5% after 10 minutes, rollback automatically").
+
+---
+
+### Q251. What is the difference between continuous delivery and continuous deployment?
+
+**Answer:**
+
+These terms are often used interchangeably but have a specific distinction:
+
+**Continuous Integration (CI):** Every commit is automatically built and tested. Developers get fast feedback on whether their change broke anything.
+
+**Continuous Delivery (CD):** Every commit that passes CI is packaged and is *ready* to be deployed to production. Deployment to production requires a human to click "deploy."
+
+**Continuous Deployment:** Every commit that passes CI/CD is *automatically* deployed to production — no human approval needed.
+
+```
+CI:                  Code → Build → Test → ✅ "Artifact ready"
+Continuous Delivery: Code → Build → Test → Artifact → [human approves] → Production
+Continuous Deployment: Code → Build → Test → Artifact → Production (automated)
+```
+
+**Which to use:**
+- Continuous deployment requires high test coverage and confidence (Google, Netflix use this)
+- Continuous delivery is more common in regulated industries or where human review is required
+- Pure CI-only is a stepping stone — you should aim for at least continuous delivery
+
+**The business impact:** Facebook deploys thousands of times per day (continuous deployment). Every hour of manual gating is an hour of reduced velocity.
+
+---
+
+### Q252. What is a deployment pipeline for database schema changes?
+
+**Answer:**
+
+Deploying database schema changes safely requires more care than code changes — schemas can't always be instantly rolled back.
+
+**Expand-contract pattern** (the safest approach for zero-downtime):
+
+**Expanding migrations** are backward-compatible:
+```sql
+-- Safe: add a nullable column (old code ignores it)
+ALTER TABLE users ADD COLUMN middle_name VARCHAR(100);
+
+-- Safe: add a new table
+CREATE TABLE user_preferences (...);
+
+-- Safe: add an index concurrently (doesn't lock table)
+CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
+```
+
+**Contracting migrations** remove what's no longer needed:
+```sql
+-- Only safe after all code using the old column is deployed and stable
+ALTER TABLE users DROP COLUMN old_column;
+```
+
+**Three-phase process:**
+1. **Expand:** Add new column/table. Deploy. Old code ignores new column, new code can start using it.
+2. **Migrate:** Backfill data if needed. Both old and new code work simultaneously.
+3. **Contract:** Once old code is gone from all deployments, remove the old structure.
+
+**Never do in one step:** Rename a column (breaks old code immediately), add NOT NULL without a default (breaks old code inserts), drop a column still used by deployed code.
+
+---
+
+### Q253. What is a feature branch workflow vs GitFlow and which scales better?
+
+**Answer:**
+
+**Feature branch workflow:** Developers create short-lived branches off main for each feature, then merge back via pull request.
+- Simple, standard approach
+- Works well for small-medium teams
+- Risk: branches can grow long-lived, causing merge conflicts
+
+**GitFlow:** A rigid branching model with specific branch types:
+- `main`: production-ready code
+- `develop`: integration branch
+- `feature/*`: individual features (off develop)
+- `release/*`: stabilization branch before production
+- `hotfix/*`: emergency production fixes
+
+```
+GitFlow complexity:
+feature → develop → release → main
+hotfix  → main + develop
+```
+
+**Problems with GitFlow at scale:**
+- Too many branches to track
+- Long-lived branches lead to massive merge conflicts
+- Slow — features sit in develop/release for weeks before reaching users
+- Doesn't fit continuous deployment
+
+**Trunk-based development scales better:** Companies like Google (30,000 engineers, one monorepo) use trunk-based development. GitFlow adds process that slows teams down without proportional benefit.
+
+**Recommendation:** Feature branches for code review (1-2 day max lifespan) + trunk-based development with feature flags > GitFlow for teams doing CI/CD seriously.
 
 ---
 
@@ -1002,6 +1294,164 @@ Trace: abc-def-ghi-123
 
 ---
 
+### Q254. What is the difference between logs, metrics, and traces — and when do you use each?
+
+**Answer:**
+
+These are the "three pillars of observability." Each answers a different question.
+
+**Logs:** Timestamped, structured records of individual events.
+- "What happened?" — discrete events with context
+- `{"ts": "2024-01-01T10:00:01Z", "level": "ERROR", "msg": "DB query failed", "query": "...", "user_id": 42}`
+- Best for: debugging specific incidents, auditing, understanding event sequences
+
+**Metrics:** Numeric measurements aggregated over time.
+- "How much / how often?" — counts, gauges, histograms
+- `api_request_duration_seconds{endpoint="/users"} p99=145ms`
+- Best for: alerting, dashboards, capacity planning, trend analysis
+
+**Traces:** A record of a request's journey through multiple services.
+- "How did this specific request flow through the system?"
+- Shows: service A called service B (50ms), which called DB (30ms)
+- Best for: finding performance bottlenecks in distributed systems
+
+**Combined example:**
+```
+Alert fires: p99 latency > 500ms (METRIC)
+→ Look at traces for slow requests (TRACE)
+→ Find that service B is slow — look at its logs (LOGS)
+→ Logs show: "connection pool exhausted" events at same timestamps
+→ Root cause found
+```
+
+**Tools:** Prometheus (metrics), Grafana (dashboards), Jaeger/Zipkin (traces), Elastic/Loki (logs), Datadog/Honeycomb (all-in-one).
+
+---
+
+### Q255. What is alerting fatigue and how do you reduce it?
+
+**Answer:**
+
+**Alerting fatigue** happens when an on-call engineer receives so many alerts (many false positives or low-importance) that they start ignoring them — including the critical ones.
+
+**Symptoms:**
+- Engineers silence alerts without investigating
+- People feel stressed by notification volume
+- A real incident gets missed because it's buried in noise
+
+**Root causes:**
+- Alerts on symptoms that don't require immediate action
+- Static thresholds that don't account for normal variation
+- Every error is an alert (instead of error rate)
+- Alerts that don't have clear runbooks or owners
+
+**Solutions:**
+
+**1. Alert on symptoms, not causes:** Alert when users are affected — "error rate > 1%" not "CPU > 70%"
+
+**2. Use percentiles and rates:** Alert on `p99 latency > 2s` not `any request > 2s`
+
+**3. Tiered severity:**
+```
+P0: Page immediately (data loss, full outage)
+P1: Page during business hours
+P2: Create ticket for next sprint
+```
+
+**4. Alert ownership:** Every alert has an owner responsible for maintaining it. If an alert fires frequently without action → either fix it or delete it.
+
+**5. Post-mortems for false positives:** Treat noisy alerts as bugs. Fix them.
+
+---
+
+### Q256. What is synthetic monitoring vs real user monitoring (RUM)?
+
+**Answer:**
+
+**Synthetic monitoring:** Automated scripts simulate user actions on a schedule — checking if your login page loads in under 2 seconds every 5 minutes from multiple regions.
+- ✅ Proactive — detects issues before real users notice
+- ✅ Consistent baseline — same test every time
+- ✅ Works even at 3am when traffic is low
+- ❌ Can't detect issues that only affect certain users, browsers, or network conditions
+
+**Real User Monitoring (RUM):** JavaScript injected into your pages collects performance data from actual users' browsers as they use the site.
+- ✅ Real-world data — captures actual user experience across all device types, network speeds, regions
+- ✅ Catches bugs synthetic tests don't exercise
+- ❌ No data when traffic is low (nights, weekends)
+- ❌ Privacy considerations (sampling vs. full capture)
+
+**Used together:**
+```
+Synthetic: "Our checkout page is up and loading in 1.2s" (proactive)
+RUM:       "But 8% of users on mobile in Southeast Asia see 8s loads" (real-world gaps)
+```
+
+**Tools:** Datadog Synthetics, Pingdom (synthetic); Google Analytics, Datadog RUM, New Relic Browser (RUM).
+
+---
+
+### Q257. What is a runbook and how does it help incident response?
+
+**Answer:**
+
+A **runbook** is a documented set of procedures for handling a specific operational scenario — what to check, what commands to run, how to decide between options, and who to escalate to.
+
+**Example runbook for "Database connection pool exhausted":**
+```
+1. Check current pool size: SELECT count(*) FROM pg_stat_activity;
+2. Identify long-running queries: SELECT pid, now() - pg_stat_activity.query_start AS duration, query
+   FROM pg_stat_activity WHERE state = 'active' ORDER BY duration DESC;
+3. If query > 5 minutes: SELECT pg_terminate_backend(pid) WHERE pid = <pid>;
+4. Check app config: max_pool_size should be set to 20 per replica
+5. If connections spike persists: scale app servers horizontally (reduces connections per server)
+6. Escalate to: @database-team if not resolved in 30 minutes
+```
+
+**Why runbooks matter:**
+- On-call engineer might be woken at 3am — runbook removes cognitive load
+- Institutional knowledge captured — new engineers can handle incidents
+- Consistent responses — everyone follows the same procedure
+- Post-incident analysis — did the runbook work? Update it.
+
+**Keep runbooks short and actionable.** They're not tutorials — they're emergency procedures. Include commands, expected outputs, and decision criteria.
+
+---
+
+### Q258. What is a service dependency graph and why do you need one?
+
+**Answer:**
+
+A **service dependency graph** maps which services call which other services. It answers "if Service X is down, what else breaks?"
+
+**Example:**
+```
+API Gateway
+    ├── User Service
+    │     └── PostgreSQL
+    ├── Order Service
+    │     ├── PostgreSQL
+    │     └── Payment Service (external)
+    └── Notification Service
+          ├── Email (SendGrid)
+          └── SMS (Twilio)
+```
+
+**Why it matters:**
+
+**Incident triage:** When the order service is down, the dependency graph tells you: check PostgreSQL and Payment Service first.
+
+**Change risk assessment:** Deploying User Service — who depends on it? API Gateway. What's the blast radius if User Service is slow?
+
+**SLA propagation:** If PostgreSQL has a 99.9% uptime SLA, and Order Service calls it, Order Service can't have a higher SLA than PostgreSQL.
+
+**Building it:**
+- **Manual:** Maintain a diagram in Confluence (gets outdated quickly)
+- **Automatic via tracing:** Distributed tracing tools (Jaeger, Datadog APM) build dependency graphs automatically from actual traffic
+
+**Recommended:** Build it automatically from distributed traces — it reflects reality, not documentation.
+
+---
+
 ## MLOps Fundamentals
 
 ---
@@ -1299,6 +1749,158 @@ def predict():
 
 ---
 
+### Q259. What is the ML model lifecycle and what are its stages?
+
+**Answer:**
+
+The **ML model lifecycle** covers every phase from identifying a business problem to retiring an old model.
+
+**Stages:**
+
+**1. Problem definition:** Is ML the right tool? What metric defines success? What data do you have?
+
+**2. Data collection and exploration:** Gather data, explore distributions, identify quality issues, understand label availability.
+
+**3. Feature engineering:** Transform raw data into features the model can learn from. Often the most time-consuming stage.
+
+**4. Model development:** Select algorithms, train, tune hyperparameters, evaluate offline metrics.
+
+**5. Validation:** Offline evaluation (held-out test set, cross-validation) + behavioral testing (does the model behave correctly on edge cases?).
+
+**6. Deployment:** Package model, set up serving infrastructure, canary or shadow deploy.
+
+**7. Monitoring:** Track prediction quality (data drift, model drift, business metrics) in production.
+
+**8. Retraining:** Scheduled or triggered retraining when model quality degrades.
+
+**9. Retirement:** When model is replaced, ensure clean shutdown — don't leave serving infrastructure running.
+
+**The loop:** Monitoring feeds back to problem definition — production data reveals new patterns that drive the next iteration.
+
+---
+
+### Q260. What is concept drift vs data drift?
+
+**Answer:**
+
+Both describe ways a deployed ML model can degrade over time, but at different levels.
+
+**Data drift (covariate shift):** The distribution of input features changes. The model was trained on one population but now sees a different one.
+
+```
+Training data: User age distribution: 18-35 years old
+Production (2 years later): App became popular with 50+ demographic
+→ Model sees input distributions it's never encountered
+→ Predictions become unreliable
+```
+
+**Concept drift:** The underlying relationship between features and the target label changes. Even if inputs stay the same, the "correct answer" has changed.
+
+```
+Training data (pre-COVID): "Home office furniture" → low purchase probability
+Production (post-COVID): Same features → high purchase probability
+→ The world changed; the model's learned rules no longer apply
+```
+
+**Detecting them:**
+- Data drift: Monitor feature distribution statistics (mean, variance, PSI — Population Stability Index). Alert if distribution shifts significantly.
+- Concept drift: Monitor actual business outcomes (precision, recall on labeled recent data, revenue impact of decisions).
+
+**Responding:** Retrain on recent data. If the old training data is no longer representative, weight recent data more heavily or discard old data entirely.
+
+---
+
+### Q261. What is model reproducibility and why is it hard to achieve?
+
+**Answer:**
+
+**Reproducibility** means being able to run the same training code on the same data and get the same model (or at least the same performance metrics) every time.
+
+**Why it matters:** If you can't reproduce a model, you can't debug it, audit it for compliance, or trust that your evaluation wasn't a fluke.
+
+**Sources of non-reproducibility:**
+
+**1. Randomness:** Model weight initialization, data shuffling, dropout, mini-batch sampling all use random numbers. Fix with `random.seed(42)`, `torch.manual_seed(42)`, `numpy.random.seed(42)` — and do it consistently everywhere.
+
+**2. Floating-point non-determinism:** GPU operations (cuDNN) can produce different results due to parallel operation ordering. `torch.use_deterministic_algorithms(True)` enforces determinism at a performance cost.
+
+**3. Data changes:** If training data is mutable (live database), the same pipeline run at different times uses different data. Fix: version datasets (DVC, Delta Lake time travel).
+
+**4. Environment changes:** Different library versions → different behavior. Fix: pin all dependencies in `requirements.txt`, use Docker.
+
+**5. Distributed training:** Non-deterministic gradient accumulation order across workers.
+
+**Minimum viable reproducibility:** Version control code, lock dependencies, version datasets, log all hyperparameters in an experiment tracker.
+
+---
+
+### Q262. What is a model artifact and what should be stored alongside it?
+
+**Answer:**
+
+A **model artifact** is everything needed to load and use a trained model. At minimum, this is the serialized weights file (`.pkl`, `.pt`, `.onnx`). But a complete artifact includes much more.
+
+**Complete model artifact should include:**
+
+**1. Model weights** — the trained parameters (`model.pkl`, `model.pt`)
+
+**2. Preprocessing pipeline** — the exact same scaler, encoder, tokenizer used at training time. Critical: if you scaled features with `StandardScaler` at training, you must use the *same* scaler (not a new one) at inference.
+
+**3. Feature schema** — what features the model expects: column names, dtypes, expected ranges. Catches silent failures when upstream data changes.
+
+**4. Model card / metadata:**
+```json
+{
+  "model_name": "churn_predictor_v3",
+  "trained_at": "2024-06-15",
+  "training_data": "s3://bucket/data/users_2024Q1",
+  "metrics": {"auc": 0.87, "precision": 0.82},
+  "hyperparameters": {"n_estimators": 200, "max_depth": 6},
+  "feature_importance": {...}
+}
+```
+
+**5. Test predictions** — a small set of inputs with expected outputs for sanity-checking the loaded model.
+
+**6. Training code version** — git commit hash that produced this artifact.
+
+**Tools:** MLflow, DVC, SageMaker Model Registry — all handle artifact storage and metadata together.
+
+---
+
+### Q263. What is the difference between ML pipelines and traditional software pipelines?
+
+**Answer:**
+
+Both are automated sequences of steps, but ML pipelines have unique challenges:
+
+**Traditional software pipeline (CI/CD):**
+- Input: code
+- Output: deployable artifact (Docker image)
+- Deterministic: same code → same output
+- Pass/fail is clear: tests either pass or fail
+
+**ML training pipeline:**
+- Input: code + data + hyperparameters
+- Output: model artifact (weights + metadata)
+- Non-deterministic: same code, different random seed → different model
+- Quality is a spectrum: accuracy 87% vs 88% — which is "passing"?
+- Data quality issues silently produce bad models (garbage in → garbage out)
+
+**Additional complexities in ML pipelines:**
+
+**Data validation step:** Must check that training data matches expected schema and statistics before training — a data pipeline bug can silently degrade model quality.
+
+**Training step:** Can take hours or days. Must be restartable from checkpoints.
+
+**Evaluation step:** Compares new model against current production model (champion-challenger). Promotes new model only if it's better on key metrics.
+
+**Data versioning:** You need to know exactly which data version was used for each training run — impossible with traditional CI/CD tooling alone.
+
+**Tools:** Kubeflow Pipelines, Apache Airflow + MLflow, Metaflow, Vertex AI Pipelines.
+
+---
+
 ## Data Pipelines & ETL
 
 ---
@@ -1503,6 +2105,154 @@ raw files → [ingest] → /delta/raw/orders/ (all versions retained)
 
 ---
 
+### Q264. What is Change Data Capture (CDC) and how is it used in data pipelines?
+
+**Answer:**
+
+**CDC** is a technique for detecting and capturing changes made to a database (inserts, updates, deletes) and streaming those changes in real time to downstream systems.
+
+**How it works (log-based CDC):** Every database maintains a transaction log (WAL in Postgres, binlog in MySQL). CDC tools read this log and emit change events without any additional load on the database.
+
+```
+PostgreSQL WAL → Debezium (CDC tool) → Kafka → Data warehouse / Search index / Cache
+```
+
+**Why it's powerful for data pipelines:**
+- Captures *all* changes, including deletes — traditional ETL struggles with deletes
+- Real-time: changes appear in the data warehouse within seconds, not hours
+- No polling queries on the source database
+- Complete audit trail — you can replay history from the beginning
+
+**Use cases:**
+- Sync production database to analytics warehouse in real time
+- Update search index (Elasticsearch) when products change
+- Invalidate cache entries when source data changes
+- Event sourcing — using DB changes as the event stream
+
+**Tools:** Debezium (open source, Kafka-based), AWS DMS, Airbyte, Fivetran.
+
+**Trade-off:** Requires access to the database's replication slot/log. Comes with operational overhead (slot management, replication lag monitoring).
+
+---
+
+### Q265. What is data pipeline idempotency and why is it critical?
+
+**Answer:**
+
+An **idempotent pipeline** produces the same result whether run once or multiple times. If a pipeline fails and is re-run, it doesn't duplicate data or produce incorrect results.
+
+**Why pipelines fail:** Network timeouts, resource limits, hardware failures, upstream data arriving late. Pipelines *will* fail — the question is whether a retry is safe.
+
+**Non-idempotent (dangerous):**
+```python
+# Append mode — re-running adds duplicates!
+df.to_sql("daily_metrics", conn, if_exists="append")
+```
+
+**Idempotent (safe to retry):**
+```python
+# Upsert mode — re-running is safe
+df.to_sql("daily_metrics", conn, if_exists="replace", 
+          method="multi", chunksize=1000)
+# Or: write to a temp table, then MERGE/UPSERT into target
+```
+
+**Techniques:**
+- **Replace, don't append:** Overwrite the partition for the current date
+- **Upsert (MERGE):** Insert if new, update if exists — based on a natural key
+- **Idempotency key:** Include a unique run ID in each record; dedup on load
+- **Date partitions:** Each pipeline run owns its date partition; re-running replaces only that partition
+
+**Golden rule:** Every pipeline stage should be a pure function of its inputs — same input, same output, always.
+
+---
+
+### Q266. What is backfilling in data pipelines and what are the challenges?
+
+**Answer:**
+
+**Backfilling** is running a pipeline for historical dates after a change — either because the pipeline was newly created, a bug was fixed, or the business logic changed and historical data needs to be recomputed.
+
+**Example:** You built a "daily active users" metric pipeline in March. Your CEO asks for the last 2 years of data. You need to backfill January 2022 to February 2024.
+
+**Challenges:**
+
+**1. Volume:** Running 2 years of daily data at once can overwhelm your compute or source database. Must throttle or batch.
+
+**2. Source data availability:** Historical data might be in cold storage, have different schemas, or be partially missing.
+
+**3. Idempotency:** If backfill fails halfway through month 6, re-running should not double-count months 1-5.
+
+**4. Resource contention:** Backfill jobs competing with live production pipelines. Common solution: run backfills at reduced parallelism or off-hours.
+
+**5. Correct "as-of" logic:** If your feature engineering uses today's prices to compute historical metrics, the backfill will be incorrect. Point-in-time correctness requires storing historical snapshots.
+
+**Best practice:** Design pipelines with backfilling in mind from day one. Use date-partitioned tables, idempotent writes, and test your backfill logic before you need it in a crisis.
+
+---
+
+### Q267. What is a data pipeline orchestrator and what are the most popular ones?
+
+**Answer:**
+
+A **pipeline orchestrator** schedules, coordinates, and monitors the execution of data pipeline tasks. It defines dependencies (Task B runs after Task A succeeds), handles retries, sends alerts on failure, and provides a UI for monitoring.
+
+**Core concepts:**
+- **DAG (Directed Acyclic Graph):** Tasks as nodes, dependencies as edges. Tasks execute in dependency order, parallelizing where possible.
+- **Task:** A unit of work (run a SQL query, trigger a Spark job, call an API)
+- **Schedule:** Cron-like expression defining when the pipeline runs
+
+**Popular orchestrators:**
+
+| Tool | Best for |
+|------|---------|
+| Apache Airflow | General-purpose, massive ecosystem, Python-first |
+| Prefect | Modern Python, better error handling, easier testing |
+| Dagster | Data-aware (tracks assets not just tasks), great for ML |
+| dbt | SQL transformations specifically |
+| Luigi | Simpler, older, less common now |
+
+**Airflow example:**
+```python
+with DAG("daily_etl", schedule_interval="0 6 * * *") as dag:
+    extract = PythonOperator(task_id="extract", python_callable=extract_data)
+    transform = PythonOperator(task_id="transform", python_callable=transform_data)
+    load = PythonOperator(task_id="load", python_callable=load_data)
+    
+    extract >> transform >> load  # dependency chain
+```
+
+---
+
+### Q268. What is stream processing vs batch processing for data pipelines?
+
+**Answer:**
+
+**Batch processing:** Data is collected over a period and processed all at once on a schedule (hourly, daily).
+- Higher throughput per unit compute — processes large volumes efficiently
+- Simple to reason about — deterministic, bounded input
+- Latency is high — data is hours old by the time it's processed
+- Tools: Spark, dbt, SQL queries
+
+**Stream processing:** Data is processed continuously as it arrives, event by event or in micro-batches.
+- Low latency — data is processed within seconds/milliseconds
+- Handles unbounded data (infinite stream)
+- More complex — must handle out-of-order events, late data, stateful operations
+- Tools: Apache Flink, Kafka Streams, Spark Structured Streaming
+
+**When to use each:**
+
+| Use batch when | Use stream when |
+|---------------|----------------|
+| Daily reports, analytics | Fraud detection (real-time) |
+| Large historical backfills | Live dashboards |
+| Complex ML training pipelines | Real-time feature computation |
+| Cost is a priority | Latency < 1 minute required |
+
+**Hybrid (Lambda architecture):** Run both in parallel — batch for accurate historical, stream for low-latency recent. High operational complexity. Modern trend: use stream processing everywhere (Kappa architecture).
+
+---
+
 ## Feature Engineering & Serving
 
 ---
@@ -1621,6 +2371,167 @@ Model (5MB .onnx file) → Downloaded to phone → Runs locally on CPU
    ↓
 User takes photo → Model predicts immediately (0 network latency)
 ```
+
+---
+
+### Q269. What is feature drift and how do you monitor it in production?
+
+**Answer:**
+
+**Feature drift** is the gradual change in the statistical properties of input features over time. Since ML models learn patterns from training data, feature drift means the model is now receiving inputs that differ from what it was trained on — often silently degrading predictions.
+
+**Detection approach — Population Stability Index (PSI):**
+PSI quantifies how much a feature's distribution has shifted between training and production.
+
+```
+PSI < 0.1:    Stable — no action needed
+0.1 < PSI < 0.2: Minor drift — monitor closely
+PSI > 0.2:    Major drift — investigate and consider retraining
+```
+
+**Practical monitoring:**
+```python
+from evidently import ColumnDriftMetric
+# Compare training distribution vs. last 7 days production data
+report = Report(metrics=[ColumnDriftMetric(column_name="user_age")])
+report.run(reference_data=training_df, current_data=production_df)
+```
+
+**What to monitor:** Null rates (null rate went from 0% to 5%?), value distributions (mean, percentiles), categorical cardinality (new categories appearing).
+
+**Automated alerts:** Set up daily jobs that compute drift metrics and page on-call if PSI exceeds thresholds.
+
+**Tools:** Evidently AI, WhyLogs, Great Expectations, Arize, Fiddler.
+
+---
+
+### Q270. What is point-in-time correctness in feature engineering?
+
+**Answer:**
+
+**Point-in-time (PIT) correctness** means that when training a model on historical data, you only use features that would have been *available at the time of the prediction* — not future information.
+
+**The leakage problem:**
+```
+Training example: User clicked an ad at time T
+Feature: "user's total purchases in the next 7 days" = 5 items
+
+→ At prediction time T, this feature doesn't exist yet!
+→ You've accidentally trained the model on future data
+→ Model achieves 95% accuracy in training, 60% in production
+→ This is called "data leakage"
+```
+
+**Point-in-time correct feature retrieval:**
+```python
+# For each training example at time T, retrieve features
+# as they existed at time T, not as they exist today
+features = feature_store.get_features(
+    entity_id=user_id,
+    feature_names=["user_purchase_count_30d", "user_age"],
+    as_of=prediction_time  # ← critical!
+)
+```
+
+**Why feature stores help:** Feature stores with time-travel capability store historical snapshots of feature values, enabling PIT-correct training data generation.
+
+**Most common sources of leakage:** Target encoding (the label leaks into the feature), aggregations over future time windows, joins where the "as-of" time isn't enforced.
+
+---
+
+### Q271. What is the difference between feature selection and feature extraction?
+
+**Answer:**
+
+Both reduce the dimensionality of your input data, but through fundamentally different mechanisms.
+
+**Feature selection:** Choose a *subset* of the original features to keep. Discard the rest.
+- Original features are unchanged — just filtered
+- Selected features remain interpretable ("user_age", "purchase_count")
+- Methods: filter (correlation, statistical tests), wrapper (recursive feature elimination), embedded (L1/Lasso regularization selects features as part of training)
+
+```python
+# L1 regularization naturally zeroes out unimportant features
+model = Lasso(alpha=0.01)
+model.fit(X_train, y_train)
+important_features = X.columns[model.coef_ != 0]
+```
+
+**Feature extraction:** Transform the original features into a *new* lower-dimensional representation.
+- Creates new features (combinations of originals)
+- New features may not be directly interpretable
+- Methods: PCA (principal components), autoencoders, embeddings
+
+```python
+from sklearn.decomposition import PCA
+pca = PCA(n_components=10)
+X_reduced = pca.fit_transform(X_train)  # 100 features → 10 components
+```
+
+**When to use which:**
+- Feature selection: when interpretability matters, when features have clear business meaning
+- Feature extraction: when dealing with very high-dimensional data (images, text, genomics), when features are highly correlated
+
+---
+
+### Q272. What are embeddings and how are they served in production?
+
+**Answer:**
+
+**Embeddings** are dense vector representations of entities — words, users, products, images — where semantically similar items are close in vector space.
+
+```
+king  → [0.5, 0.3, -0.2, ...]  (300-dim vector)
+queen → [0.5, 0.2, -0.1, ...]  (similar direction to king)
+apple → [-0.8, 0.1, 0.7, ...]  (very different)
+```
+
+**Why they're powerful:** Traditional ML features are sparse (one-hot encoded categories). Embeddings are dense and capture semantic relationships — "Paris" and "France" are close in embedding space.
+
+**Production serving challenges:**
+
+**Latency:** Embedding lookup from a table of 10M products needs to be fast. Solution: in-memory key-value store (Redis) with 4-byte float arrays.
+
+**Similarity search:** Finding the 10 most similar products requires comparing against millions of vectors. Exact search is too slow. Solution: approximate nearest neighbor (ANN) search with FAISS, Annoy, or a vector database (Pinecone, Weaviate).
+
+**Freshness:** If user behavior changes, embeddings trained last month may not reflect current preferences. Schedule regular retraining + reindexing.
+
+**Storage:** 10M products × 128-dim float32 = 5GB. Plan for this — Redis memory, vector DB capacity.
+
+---
+
+### Q273. What is the difference between feature normalization and standardization?
+
+**Answer:**
+
+Both scale features to a common range so that no single feature dominates the model due to its magnitude — but they do it differently.
+
+**Normalization (Min-Max scaling):** Scales values to a fixed range, typically [0, 1].
+
+```python
+x_normalized = (x - x_min) / (x_max - x_min)
+# age: [18, 90] → [0, 1]
+```
+- ✅ Bounded output range — useful for neural networks, image pixels
+- ❌ Sensitive to outliers (one extreme value compresses everything else)
+
+**Standardization (Z-score scaling):** Centers the distribution at mean=0 with std=1.
+
+```python
+x_standardized = (x - mean) / std
+# age: mean=35, std=12 → values centered around 0
+```
+- ✅ Robust to outliers
+- ✅ Works well for linear models, SVMs, PCA
+- ❌ No bounded range
+
+**When to use which:**
+- Neural networks: normalization (bounded activations are better)
+- Linear/logistic regression, SVM: standardization
+- Tree-based models (Random Forest, XGBoost): neither needed — trees split on thresholds, not magnitudes
+- KNN, K-means: always normalize/standardize — distance calculations are sensitive to scale
+
+**Critical rule:** Fit the scaler on training data only. Apply (transform) to training and test data. Never fit on test data — that would leak test statistics into training.
 
 ---
 
@@ -1790,6 +2701,181 @@ scores = cross_val_score(model, X, y, cv=cv, scoring='roc_auc')
 # If y is 95% class 0, 5% class 1:
 # Each fold will have ~95% class 0, ~5% class 1 (representative)
 ```
+
+---
+
+### Q274. What is distributed training and what are the key strategies?
+
+**Answer:**
+
+**Distributed training** splits the training workload across multiple GPUs or machines — necessary when a model or dataset doesn't fit on a single device, or when you want to speed up training.
+
+**Data parallelism:** Split the training data across workers. Each worker has a complete copy of the model and trains on its shard of data. Gradients are averaged across workers after each step.
+
+```
+Worker 1: batch 1-32  → gradients_1
+Worker 2: batch 33-64 → gradients_2
+Worker 3: batch 65-96 → gradients_3
+                    ↓ AllReduce (average gradients)
+           All workers update model with averaged gradient
+```
+
+- Scales well for large datasets
+- Each worker needs to fit the full model in GPU memory
+
+**Model parallelism:** Split the model itself across devices. Different layers on different GPUs.
+- Necessary when a single model is too large for one GPU (GPT-4 style models)
+- Pipeline parallelism: Layer groups in a pipeline, each GPU handles a stage
+
+**Tensor parallelism:** Split individual weight matrices across GPUs — used for very large transformers.
+
+**Tools:** PyTorch DDP (data parallel), DeepSpeed (ZeRO optimizer), Megatron-LM (tensor parallel for LLMs), FSDP (Fully Sharded Data Parallel).
+
+---
+
+### Q275. What is gradient checkpointing and when is it used?
+
+**Answer:**
+
+**Gradient checkpointing** (also called activation checkpointing) is a memory optimization technique for training large neural networks. Instead of storing all intermediate activations in GPU memory during the forward pass, it recomputes them during the backward pass.
+
+**Normal training memory:**
+```
+Forward pass: store all activations for all layers → large GPU memory usage
+Backward pass: use stored activations to compute gradients
+```
+
+**With gradient checkpointing:**
+```
+Forward pass: only store activations at "checkpointed" layers (every N layers)
+Backward pass: for layers between checkpoints, recompute activations on the fly
+→ Trade compute for memory (recompute cost: ~33% more FLOPS)
+```
+
+**When to use it:**
+- Training large models (transformers, ResNets) that exceed GPU memory
+- When you need a larger batch size but memory is the bottleneck
+- Fine-tuning large pretrained models
+
+```python
+# PyTorch
+from torch.utils.checkpoint import checkpoint
+output = checkpoint(layer, input)  # recomputes layer during backward
+
+# Hugging Face Transformers
+model.gradient_checkpointing_enable()
+```
+
+**Trade-off:** ~20-40% slower training in exchange for significantly reduced memory. For a 2x memory reduction, you pay ~33% more compute. Almost always worth it when memory is the constraint.
+
+---
+
+### Q276. What is a learning rate scheduler and how does it affect training?
+
+**Answer:**
+
+A **learning rate scheduler** automatically adjusts the learning rate during training. The learning rate controls how large each gradient descent step is — too high causes divergence, too low means very slow convergence.
+
+**Why dynamic scheduling helps:** A high LR early in training makes fast progress. A low LR later allows fine-grained convergence to the optimum.
+
+**Common schedulers:**
+
+**Step decay:** Reduce LR by a factor every N epochs.
+```python
+scheduler = StepLR(optimizer, step_size=30, gamma=0.1)  # LR × 0.1 every 30 epochs
+```
+
+**Cosine annealing:** LR follows a cosine curve from max to min. Smooth, widely used.
+```python
+scheduler = CosineAnnealingLR(optimizer, T_max=100)
+```
+
+**Warm-up then decay:** Start with a tiny LR, increase to target over first N steps, then decrease. Standard for transformers — prevents early training instability.
+```python
+# Hugging Face
+scheduler = get_linear_schedule_with_warmup(
+    optimizer, num_warmup_steps=1000, num_training_steps=10000
+)
+```
+
+**One-cycle policy (fast.ai):** LR increases then decreases over one training cycle — often achieves better results faster.
+
+**Rule of thumb:** Use cosine annealing or one-cycle for most tasks. Always use warmup when fine-tuning large pre-trained models.
+
+---
+
+### Q277. What is early stopping and how do you implement it correctly?
+
+**Answer:**
+
+**Early stopping** halts training when the validation metric stops improving — preventing overfitting and saving compute.
+
+**How it works:**
+```
+After each epoch:
+  If val_loss < best_val_loss:
+    best_val_loss = val_loss
+    save_checkpoint()
+    patience_counter = 0
+  Else:
+    patience_counter += 1
+    If patience_counter >= patience:
+      Stop training
+      Load best checkpoint
+```
+
+**The patience hyperparameter:** How many epochs to wait for improvement before stopping. Too low → stops too early (underfitting). Too high → wastes compute.
+
+**Common mistakes:**
+
+**Using test data for stopping:** You should monitor *validation* loss, never test loss. If you stop based on test performance, you've effectively trained on test data.
+
+**Not restoring best weights:** After stopping, load the checkpoint from the best epoch — not the final epoch (which overfit).
+
+**Wrong metric:** Track the metric you actually care about (AUC, F1) not just training loss.
+
+```python
+# Keras implementation
+early_stopping = EarlyStopping(
+    monitor='val_auc',
+    patience=10,
+    restore_best_weights=True,  # critical!
+    mode='max'
+)
+```
+
+---
+
+### Q278. What is the bias-variance trade-off and how does it guide model selection?
+
+**Answer:**
+
+The **bias-variance trade-off** describes two sources of prediction error that pull in opposite directions as model complexity changes.
+
+**Bias:** Error from overly simplistic assumptions. A linear model predicting a non-linear relationship has high bias — it *underfits*.
+
+**Variance:** Error from sensitivity to small fluctuations in training data. A very deep tree memorizes the training set but fails on new data — it *overfits*.
+
+```
+Model complexity →
+
+Low complexity:  High Bias  | Low Variance  (underfitting)
+High complexity: Low Bias   | High Variance (overfitting)
+Optimal:         Good Bias  | Good Variance (just right)
+```
+
+**Diagnosing:**
+- High bias: training error high AND validation error high → model too simple
+- High variance: training error low BUT validation error high → model too complex
+
+**Fixes:**
+
+| Problem | Solutions |
+|---------|-----------|
+| High bias (underfitting) | More features, larger model, reduce regularization |
+| High variance (overfitting) | More data, regularization (L1/L2/dropout), simpler model, cross-validation, ensemble methods |
+
+**In practice:** Start with a model complex enough to overfit intentionally (confirms the model can learn the signal), then add regularization to reduce variance. This is more reliable than starting too simple.
 
 ---
 
@@ -2272,6 +3358,182 @@ Strategy 3: All layers trainable
 
 ---
 
+### Q279. How would you design a fraud detection system at scale?
+
+**Answer:**
+
+**Requirements:** Detect fraudulent transactions in real time (<100ms), handle millions of transactions/day, minimize false positives (blocking legitimate users), adapt to evolving fraud patterns.
+
+**Architecture:**
+
+**1. Real-time scoring layer:**
+- Transaction arrives → feature computation (<10ms) → model inference (<20ms) → decision
+- Features: transaction amount, merchant category, user history (last N transactions), device fingerprint, velocity (transactions per hour)
+- Model: gradient boosted tree (GBM) — fast inference, good AUC, interpretable
+
+**2. Feature pipeline:**
+- Real-time features: computed on-the-fly (amount, merchant, time of day)
+- Pre-computed features: pulled from feature store (user's average spend, account age) — must be fresh, computed by a streaming pipeline
+
+**3. Decision engine:**
+- Low risk score → approve
+- High risk score → block
+- Medium → step-up authentication (2FA challenge)
+
+**4. Feedback loop:**
+- Chargebacks and confirmed fraud → labeled data → retrain weekly
+- Fraud patterns evolve → monitor feature drift, retrain frequently
+
+**5. Explainability:**
+- SHAP values: "This transaction was flagged because amount (3x user average) + new device + foreign country"
+- Required for compliance and customer service disputes
+
+**Scale numbers:** 10K TPS peak → needs sub-20ms p99 → no synchronous DB calls → feature store with sub-5ms p99.
+
+---
+
+### Q280. How would you design a search ranking system?
+
+**Answer:**
+
+**Core goal:** Given a user query, rank millions of candidate documents by relevance — in under 100ms.
+
+**Two-stage retrieval + ranking:**
+
+**Stage 1 — Retrieval (recall):** Quickly find top-K candidate documents (K ≈ 1000).
+- **BM25** (inverted index, text matching) — fast, no ML needed
+- **Embedding-based ANN** (semantic search) — handles synonyms and intent
+- Run both in parallel, merge results
+
+**Stage 2 — Ranking (precision):** Score the top-K candidates with a more expensive model.
+- Features: text relevance, user signals (past clicks, dwell time), document quality (freshness, authority)
+- Model: LambdaMART, XGBoost, or a small transformer
+
+**Online learning:** Click-through rate and dwell time provide continuous supervision signal. Retrain ranking model regularly.
+
+**Personalization layer:** Blend a universal ranking with user-specific signals (favorite categories, location, past history).
+
+**Key infrastructure:**
+- **Inverted index:** Elasticsearch or Solr
+- **Vector index:** FAISS or Pinecone for semantic retrieval
+- **Feature store:** Serve user features at <5ms
+- **A/B testing framework:** Essential for ranking experiments
+
+---
+
+### Q281. How would you design a content moderation system using ML?
+
+**Answer:**
+
+**Requirements:** Detect harmful content (hate speech, spam, NSFW images) at scale, minimize false positives (incorrectly removing legitimate content), fast enough for pre-posting screening.
+
+**Multi-layer architecture:**
+
+**Layer 1 — Rule-based filters (fast, cheap):**
+- Block known spam phrases, banned keywords, known bad URLs
+- ~80% of spam caught here in milliseconds
+
+**Layer 2 — ML classifiers:**
+- Text: BERT-based classifier fine-tuned on labeled harmful content
+- Images: CNN trained on safe/unsafe categories
+- Fast inference: ONNX-quantized model, <50ms
+
+**Layer 3 — Human review queue:**
+- Cases the model is uncertain about (confidence 0.4-0.7)
+- New patterns not in training data
+- Appeals from users
+
+**Feedback loop:**
+```
+Human moderator reviews → Labels → Retraining pipeline → Better model
+```
+
+**Challenges:**
+- **Evolving tactics:** Spammers adapt. Model needs frequent retraining.
+- **Context dependency:** "I want to kill it" is innocuous in gaming context.
+- **Multilingual:** One model per language or multilingual model (mBERT, XLM-R).
+- **False positive cost:** Incorrectly removing legitimate content harms user trust more than missing some bad content.
+
+**Metrics to monitor:** Precision (how many removals are correct?), recall (how much harmful content is caught?), false positive rate (legitimate content removed).
+
+---
+
+### Q282. How would you design a personalization engine?
+
+**Answer:**
+
+**Goal:** Show each user content, products, or recommendations that are most relevant to them specifically.
+
+**Core components:**
+
+**1. User understanding layer:**
+- Explicit: saved preferences, ratings, follows
+- Implicit: clicks, dwell time, purchases, skips
+- Demographic/contextual: location, device, time of day
+
+**2. Candidate generation (retrieval):**
+- Collaborative filtering: "users like you also liked..."
+- Content-based: "items similar to what you've engaged with"
+- Trending/diversity: ensure fresh and diverse candidates
+
+**3. Ranking:**
+- Score each candidate with a model using user features + item features + context
+- Optimize for the long-term objective (not just immediate click — avoid clickbait trap)
+
+**4. Diversity and freshness constraints:**
+- Don't show all recommendations from one category
+- Inject fresh content even if it has lower predicted CTR (exploration)
+
+**5. A/B testing layer:**
+- Different recommendation strategies tested in parallel
+- Measure 7-day and 28-day engagement, not just click rate
+
+**Cold start:** New users have no history. Solutions: onboarding survey (ask preferences), popularity-based recommendations, then quick personalization as signals accumulate.
+
+---
+
+### Q283. What is a feature platform and how does it power ML systems?
+
+**Answer:**
+
+A **feature platform** (or ML platform feature layer) is the infrastructure that handles the entire lifecycle of ML features: computation, storage, versioning, and serving.
+
+**Problems it solves:**
+
+**Without a feature platform:**
+```
+Team A builds user_age feature for fraud detection
+Team B rebuilds the same user_age feature for recommendations
+→ 2x compute, different implementations, potential inconsistency
+```
+
+**With a feature platform:**
+```
+user_age defined once → shared by fraud detection, recommendations, churn prediction
+→ Single source of truth, computed once, served everywhere
+```
+
+**Components:**
+
+**Feature registry:** Catalog of all defined features (schema, owner, description, lineage)
+
+**Offline store:** Historical feature values for training (data warehouse, Delta Lake)
+
+**Online store:** Low-latency feature lookup for inference (Redis, DynamoDB)
+
+**Computation layer:** Feature pipelines (Spark for batch, Flink for streaming)
+
+**Key capability — training/serving consistency:**
+```
+Training: features computed from offline store → same logic as online
+Serving: features computed from online store → same logic as training
+→ No training-serving skew
+```
+
+**Tools:** Feast (open source), Tecton, Vertex AI Feature Store, AWS SageMaker Feature Store.
+
+---
+
 ## Inference & Serving
 
 ---
@@ -2484,6 +3746,173 @@ Scaling:
 ├─ Vertical: Use bigger GPU (A100 instead of V100)
 ├─ Horizontal: Run multiple vLLM instances with load balancing
 └─ Cache: Store frequent responses (e.g., "What is AI?") in Redis
+```
+
+---
+
+### Q284. What is model quantization and how does it speed up inference?
+
+**Answer:**
+
+**Quantization** reduces the numerical precision of model weights and activations — from 32-bit floats (FP32) to 16-bit (FP16), 8-bit integers (INT8), or even 4-bit (INT4). This shrinks model size and speeds up inference, often with minimal accuracy loss.
+
+**Why it works:** Modern hardware has specialized INT8 units that run 2-4x faster than FP32. Plus, smaller values mean less memory bandwidth — often the actual bottleneck.
+
+**Types:**
+
+**Post-training quantization (PTQ):** Quantize a trained model without retraining. Fast to apply, slight accuracy drop.
+```python
+import torch
+model_quantized = torch.quantization.quantize_dynamic(
+    model, {torch.nn.Linear}, dtype=torch.qint8
+)
+```
+
+**Quantization-aware training (QAT):** Simulate quantization during training so the model adapts. Better accuracy, requires retraining.
+
+**Typical trade-offs:**
+| Precision | Size | Speedup | Accuracy drop |
+|-----------|------|---------|---------------|
+| FP32 | 100% | 1x | 0% |
+| FP16 | 50% | 1.5-2x | <0.1% |
+| INT8 | 25% | 2-4x | <1% |
+| INT4 | 12.5% | 3-6x | 1-3% |
+
+**Use cases:** Mobile deployment (INT8), LLM serving (INT4 with GPTQ/bitsandbytes), edge devices, real-time inference where latency is critical.
+
+---
+
+### Q285. What is dynamic batching in model serving?
+
+**Answer:**
+
+**Dynamic batching** automatically groups multiple individual inference requests arriving close in time into a single batch before sending to the model. This improves GPU utilization dramatically — GPUs are designed for parallel operations.
+
+**The problem:**
+```
+Requests arrive one at a time:
+req1 → model (batch size 1) → GPU at 5% utilization
+req2 → model (batch size 1) → GPU at 5% utilization
+...wasteful
+```
+
+**With dynamic batching:**
+```
+req1 arrives at t=0ms  → wait briefly
+req2 arrives at t=2ms  → wait
+req3 arrives at t=4ms  → wait
+req4 arrives at t=6ms  → batch full or max_delay reached
+→ model(batch=[req1, req2, req3, req4]) → GPU at 80% utilization
+```
+
+**Configuration parameters:**
+- **Max batch size:** Upper limit (memory constraint)
+- **Max delay:** Maximum time to wait for more requests to join the batch (e.g., 10ms)
+
+**Trade-off:** Small latency increase (waiting for batch to fill) in exchange for significantly higher throughput and lower cost per request.
+
+**Tools that support it:** NVIDIA Triton Inference Server (natively), TorchServe, TF Serving, vLLM (for LLMs — uses "continuous batching" variant).
+
+**LLM continuous batching:** Requests join the batch as soon as a slot frees (vs. waiting for the whole batch to finish) — enables much higher GPU utilization for LLMs with variable-length outputs.
+
+---
+
+### Q286. What is model caching and when do you cache predictions?
+
+**Answer:**
+
+**Prediction caching** stores model outputs so that identical (or semantically similar) inputs don't require running inference again. Reduces latency and cost.
+
+**Exact caching:** Cache the prediction for an exact input.
+```python
+cache_key = hash(frozenset(input_features.items()))
+if cached := redis.get(cache_key):
+    return cached
+result = model.predict(input_features)
+redis.setex(cache_key, ttl=3600, value=result)
+return result
+```
+
+**When exact caching helps:**
+- Recommendation systems where millions of users share similar feature vectors
+- NLP models called with the same text repeatedly (FAQ chatbots)
+- Image classification where the same image is submitted multiple times
+
+**Semantic caching (for LLMs):** Embed the query, find similar cached queries using ANN search, return the cached response if similarity > threshold.
+```
+New query: "What is the capital of France?"
+Cached:    "What's France's capital city?" → cosine similarity 0.97 → return "Paris"
+```
+
+**When NOT to cache:**
+- User-specific predictions (the prediction is unique per user)
+- Time-sensitive predictions (fraud score changes as context changes)
+- High cardinality inputs (essentially unique every time)
+
+**Cache TTL:** Set based on how quickly the underlying model or data changes — a model retrained weekly means predictions can safely be cached for days.
+
+---
+
+### Q287. What is a canary deployment for ML models?
+
+**Answer:**
+
+A **model canary deployment** gradually routes a small percentage of production traffic to a new model version while the old version handles the rest — letting you validate real-world performance before full rollout.
+
+**How it works:**
+```
+100% of traffic → Model v1 (current champion)
+
+Deploy v2 as canary:
+  95% of traffic → Model v1
+   5% of traffic → Model v2 (canary)
+
+Monitor for 24 hours:
+  - Latency, error rates (engineering metrics)
+  - CTR, revenue, precision/recall (business metrics)
+
+If v2 looks good: 50% → v2, then 100% → v2
+If v2 has issues: rollback 5% back to v1, investigate
+```
+
+**Differences from software canary:**
+- Must monitor business outcomes, not just system health — a model can be technically "up" but making worse predictions
+- Requires statistical significance testing — 5% traffic for 1 hour may not be enough sample size to detect a 1% CTR difference
+- Need holdout logging — log all predictions from both models with the eventual ground truth label to compare offline later
+
+**Shadow deployment vs canary:** Shadow mode runs both models but only uses v1 for actual decisions (v2's predictions are discarded). Canary deployment actually serves v2 to real users.
+
+---
+
+### Q288. What is model serving infrastructure and what are the key components?
+
+**Answer:**
+
+**Model serving infrastructure** is everything needed to take a trained model and reliably deliver predictions to production applications.
+
+**Key components:**
+
+**1. Model server:** The process that loads the model and handles inference requests. Examples: TorchServe, TF Serving, NVIDIA Triton, vLLM, or a simple FastAPI service.
+
+**2. Model registry:** Version-controlled store of trained models with metadata. The serving layer pulls from here. Examples: MLflow Model Registry, SageMaker Model Registry.
+
+**3. Load balancer:** Distributes requests across multiple model server instances. Required for high availability and horizontal scaling.
+
+**4. Autoscaling:** Scale model server instances up when traffic spikes, down when idle. GPU instances are expensive — scale to zero when possible.
+
+**5. Request queue:** Buffer between clients and model servers. Smooths traffic spikes. Important for batch inference scenarios.
+
+**6. Monitoring + logging:** Track every prediction's input, output, latency. Essential for debugging and drift detection.
+
+**7. Feature retrieval layer:** For real-time features (user's last 10 clicks), call the feature store synchronously during inference. Must be fast (<5ms) to not dominate inference latency.
+
+**Full request flow:**
+```
+Client → Load Balancer → Model Server
+                                → Feature Store (fetch user features)
+                                → Model inference
+                                → Response
+                        → Prediction Log → Monitoring
 ```
 
 ---
@@ -2903,6 +4332,185 @@ gradient_boosting    n_estimators: 150         accuracy: 0.9325 ← Best!
                      learning_rate: 0.05       precision: 0.9150
                                                recall: 0.8900
 ```
+
+---
+
+### Q289. What is data schema validation and what tools are used?
+
+**Answer:**
+
+**Data schema validation** checks that incoming data conforms to a defined structure — correct column names, expected data types, value ranges, and nullability constraints. It's the first line of defense against data quality issues silently corrupting ML pipelines.
+
+**What to validate:**
+- Column presence ("did user_age disappear from the feed?")
+- Data types ("is purchase_amount always a float, not sometimes a string?")
+- Value ranges ("is age always between 0 and 120?")
+- Null rates ("null rate for email went from 2% to 40% — upstream bug")
+- Cardinality ("country should have <250 unique values — new garbage values appearing?")
+
+**Example with Great Expectations:**
+```python
+import great_expectations as gx
+context = gx.get_context()
+
+# Define expectations
+batch.expect_column_values_to_not_be_null("user_id")
+batch.expect_column_values_to_be_between("age", min_value=0, max_value=150)
+batch.expect_column_values_to_be_in_set("status", ["active", "inactive", "pending"])
+batch.expect_column_to_exist("purchase_amount")
+
+# Run validation
+result = context.run_validation_definition(validation_def)
+if not result.success:
+    alert_on_call()
+    stop_pipeline()
+```
+
+**Tools:** Great Expectations, Pandera (schema validation for DataFrames), dbt tests (for SQL pipelines), TensorFlow Data Validation (TFDV).
+
+---
+
+### Q290. What is the difference between data completeness, accuracy, and consistency?
+
+**Answer:**
+
+These are three distinct dimensions of data quality, each requiring different checks.
+
+**Completeness:** Is all expected data present?
+- Missing rows ("we expected 1M daily events but got 600K")
+- Missing values (null rates higher than expected)
+- Missing partitions (yesterday's data didn't arrive)
+
+```sql
+-- Check completeness: row count vs expected
+SELECT date, COUNT(*) as row_count 
+FROM events 
+WHERE date >= CURRENT_DATE - 7
+GROUP BY date;
+-- Alert if any day has <95% of expected volume
+```
+
+**Accuracy:** Does the data correctly reflect reality?
+- Prices that are negative
+- Ages of 999 (sentinel values treated as real)
+- Timestamps in the future
+- Duplicate transactions
+
+**Consistency:** Is data consistent across systems and time?
+- The count of active users in the users table matches the count in the events table
+- A product price is the same in the product catalog and in the order records
+- A metric calculated two different ways gives the same answer
+
+**Why all three matter for ML:**
+- Completeness issues → model trained on biased subset
+- Accuracy issues → model learns wrong patterns
+- Consistency issues → training-serving skew (model trained on one calculation, served with another)
+
+---
+
+### Q291. What is anomaly detection for data pipelines?
+
+**Answer:**
+
+**Pipeline anomaly detection** monitors the data flowing through a pipeline and automatically flags statistical anomalies — row count drops, sudden metric spikes, distribution shifts — before they silently corrupt downstream models or dashboards.
+
+**Types of anomalies to detect:**
+
+**Volume anomalies:** Significantly fewer or more rows than expected.
+```python
+# Track daily row counts and alert on deviations
+if row_count < expected_count * 0.8:
+    alert("Row count 20% below expected")
+```
+
+**Value anomalies:** Metrics (mean, median, std) shift significantly.
+```python
+# Use rolling statistics
+z_score = (current_mean - rolling_mean) / rolling_std
+if abs(z_score) > 3:
+    alert(f"Mean shifted by {z_score:.1f} standard deviations")
+```
+
+**Freshness anomalies:** Data arrived later than expected.
+```python
+max_event_time = df["event_timestamp"].max()
+if (now - max_event_time).hours > 2:
+    alert("Data is more than 2 hours stale")
+```
+
+**Distribution anomalies:** Feature distributions changed (overlaps with feature drift monitoring).
+
+**Tools:** Monte Carlo Data, Anomalo, dbt tests with custom thresholds, custom monitoring with Airflow.
+
+**Best practice:** Run anomaly checks as the first task in every pipeline DAG — fail fast before wasting hours of compute on bad data.
+
+---
+
+### Q292. What is data lineage and why does it matter for ML?
+
+**Answer:**
+
+**Data lineage** tracks the origin and transformation history of data — where it came from, what transformations were applied, and what downstream systems depend on it.
+
+**Visual example:**
+```
+raw_events (S3)
+    → cleaned_events (Spark job: remove nulls, normalize timestamps)
+        → user_features (aggregation: 30-day activity)
+            → churn_model_v3 (training dataset)
+                → churn_model_v3.pkl (model artifact)
+                    → churn_predictions_api (production service)
+```
+
+**Why it's critical for ML:**
+
+**Debugging:** "Our churn predictions changed last week" — lineage shows that `user_features` changed because `cleaned_events` changed because the upstream pipeline schema changed.
+
+**Impact analysis:** "We need to update the raw_events schema" — lineage shows which models and pipelines will be affected.
+
+**Audit and compliance:** GDPR "right to be forgotten" — lineage tells you every dataset and model that used a user's data, so you can delete it everywhere.
+
+**Reproducibility:** Know exactly which version of which dataset trained which model.
+
+**Tools:** OpenLineage (open standard), Marquez, DataHub, Apache Atlas, dbt (lineage for SQL).
+
+---
+
+### Q293. What is statistical process control for monitoring data quality?
+
+**Answer:**
+
+**Statistical Process Control (SPC)** is a method from manufacturing quality control, applied to data pipelines. Instead of static thresholds ("alert if row count < 1M"), SPC uses control charts based on historical statistics to dynamically determine what's "normal."
+
+**Control chart basics:**
+```
+Upper Control Limit (UCL) = mean + 3 × std
+Lower Control Limit (LCL) = mean - 3 × std
+
+Values within UCL/LCL → normal variation → no alert
+Values outside UCL/LCL → unusual, investigate
+```
+
+**Why static thresholds fail:** Your daily event count is 1.2M on weekdays and 600K on weekends. A static threshold of "alert if < 900K" would fire every weekend. SPC adapts to the data's own patterns.
+
+**Implementation:**
+```python
+import pandas as pd
+
+def compute_control_limits(series, window=30):
+    rolling_mean = series.rolling(window).mean()
+    rolling_std = series.rolling(window).std()
+    ucl = rolling_mean + 3 * rolling_std
+    lcl = rolling_mean - 3 * rolling_std
+    return ucl, lcl
+
+ucl, lcl = compute_control_limits(daily_row_counts)
+today_count = get_today_count()
+if today_count > ucl.iloc[-1] or today_count < lcl.iloc[-1]:
+    alert(f"Row count outside control limits: {today_count}")
+```
+
+**Tools:** Monte Carlo Data, Anomalo, and custom implementations in Airflow/dbt all use variants of SPC for automated data quality monitoring.
 
 ---
 
