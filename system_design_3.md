@@ -576,6 +576,120 @@ for hit in results['hits']['hits']:
 
 ---
 
+### Q357. What is a time-series database and when should you use it over a general-purpose database?
+
+**Answer:**
+
+A **time-series database (TSDB)** is purpose-built for storing and querying data that is indexed by time — metrics, events, sensor readings, financial tick data. Every row has a timestamp, and queries are almost always over time ranges.
+
+**Why general-purpose DBs struggle with time-series:**
+- High write throughput (millions of data points/second from monitoring agents)
+- Most data is never updated — append-only
+- Queries are time-range based, not point lookups
+- Data retention policies (downsampling, expiry) are first-class needs
+- Aggregations over time windows are the core operation
+
+**TSDB optimizations:**
+- **Time-based partitioning:** Data stored in time-ordered chunks; old chunks compressed and eventually deleted
+- **Columnar compression:** Timestamps and similar numeric values compress extremely well (delta-of-delta encoding)
+- **Automatic downsampling:** Old high-resolution data is rolled up to coarser resolution (1s → 1min → 1hr)
+
+**When to use a TSDB:**
+
+✅ Infrastructure metrics (CPU, memory, latency by second)
+✅ IoT sensor data (temperature every 100ms)
+✅ Financial market data (tick data)
+✅ Application performance monitoring (APM)
+
+❌ Don't use for: user profiles, transactions, documents — these aren't primarily time-indexed.
+
+**Comparison:**
+
+| Database | Write throughput | Time-range queries | Retention policies |
+|----------|-----------------|-------------------|-------------------|
+| PostgreSQL | ~10K/s | OK with indexes | Manual |
+| TimescaleDB | ~500K/s | Excellent | Automatic |
+| InfluxDB | ~1M/s | Excellent | Built-in |
+| Prometheus | ~1M/s | PromQL built-in | Configurable |
+
+**TimescaleDB** is PostgreSQL extension — you get SQL + time-series optimizations. Good choice if you already use Postgres and need time-series features without operational complexity of a new system.
+
+---
+
+### Q358. What is a graph database and what use cases does it excel at?
+
+**Answer:**
+
+A **graph database** stores data as nodes (entities) and edges (relationships), with properties on both. Unlike relational databases where relationships are implicit (via JOINs), graph databases make relationships first-class citizens — traversal is O(1) per hop regardless of total data size.
+
+**Why relational fails for graph problems:**
+```sql
+-- "Find friends of friends of Alice" in SQL:
+SELECT DISTINCT u3.*
+FROM users u1
+JOIN friendships f1 ON u1.id = f1.user_a
+JOIN users u2 ON f1.user_b = u2.id
+JOIN friendships f2 ON u2.id = f2.user_a
+JOIN users u3 ON f2.user_b = u3.id
+WHERE u1.name = 'Alice';
+-- Complex at depth 2; 6+ hops is practically impossible
+```
+
+**Graph database equivalent (Cypher / Neo4j):**
+```cypher
+MATCH (alice:User {name: "Alice"})-[:FRIEND*2]->(fof:User)
+WHERE fof <> alice
+RETURN fof.name
+```
+Graph traversal is fast regardless of depth because edges are physical pointers, not computed JOINs.
+
+**Use cases where graphs excel:**
+
+| Use case | Why graph wins |
+|----------|---------------|
+| Social networks | Friend recommendations, degree-of-separation |
+| Fraud detection | Ring fraud: find circular transaction networks |
+| Knowledge graphs | Semantic relationships (Google Knowledge Graph) |
+| Supply chain | Multi-hop dependency tracking |
+| Recommendation systems | "Users who bought X also..." via product graph |
+| Access control / IAM | Hierarchical permissions traversal |
+
+**Popular graph databases:** Neo4j (Cypher query language), Amazon Neptune, Dgraph.
+
+---
+
+### Q359. What is NewSQL and how do CockroachDB and Google Spanner differ from traditional SQL and NoSQL?
+
+**Answer:**
+
+**NewSQL** databases attempt to combine the ACID guarantees and SQL interface of relational databases with the horizontal scalability of NoSQL systems.
+
+| | PostgreSQL | Cassandra | CockroachDB/Spanner |
+|--|------------|-----------|---------------------|
+| Scalability | Vertical | Horizontal | Horizontal |
+| ACID transactions | Yes (single node) | Limited (single partition) | Yes (distributed) |
+| SQL support | Full | CQL (limited) | Full SQL |
+| Joins | Yes | No | Yes |
+
+**How they achieve distributed ACID — Raft consensus:**
+- Every write is committed on a quorum of nodes before returning success
+- Data auto-shards across nodes by primary key range
+- Reads can be served from any replica with linearizable consistency
+
+```sql
+-- CockroachDB: looks like regular SQL, scales horizontally
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+COMMIT;  -- this transaction is atomically consistent across all shards
+```
+
+**Google Spanner's innovation:** Uses atomic clocks (TrueTime API) to assign globally consistent timestamps. Enables external consistency across regions without coordination overhead.
+
+**Trade-offs:** Higher latency than single-node PostgreSQL (distributed consensus = extra round trips). More expensive. Use when you've genuinely outgrown PostgreSQL and need multi-region ACID guarantees — not as a default choice.
+
+---
+
 ## Scaling by Users
 
 ---
@@ -778,6 +892,124 @@ User Scale    | Monthly Cost | DB Solution    | Deployment
 1M - 100M     | $20K-200K    | Cassandra / PG | Multi-AZ, auto-scaling
 100M - 1B     | $200K+       | Custom / NoSQL | Multi-region, custom infra
 ```
+
+---
+
+### Q360. What is a read-heavy vs write-heavy workload and how does each shape your architecture?
+
+**Answer:**
+
+**Read-heavy workloads** (typical ratio: 90%+ reads): Social media feeds, product catalogs, content platforms, dashboards.
+
+**Architectural responses:**
+- **Read replicas:** Route all reads to replicas; writes only go to primary
+- **Caching:** Redis layer absorbs repeated reads. Cache hit rate 95%+ means DB sees < 5% of traffic
+- **CDN:** For cacheable content (product images, static pages), edge-serve globally
+- **Denormalization:** Pre-join frequently-queried data to avoid expensive JOINs on reads
+- **Eventual consistency is acceptable:** Slight staleness tolerable if it means faster reads
+
+```
+Read-heavy architecture:
+[Users] → [CDN] → [Load Balancer] → [App Servers] → [Redis Cache] → [Read Replicas]
+                                                                    → [Primary (writes only)]
+```
+
+**Write-heavy workloads** (typical ratio: 50%+ writes): IoT telemetry, financial transactions, event logging, analytics ingestion.
+
+**Architectural responses:**
+- **Write-optimized storage:** LSM-tree databases (Cassandra, RocksDB) are faster for writes than B-tree databases
+- **Message queue buffer:** Kafka absorbs write bursts; consumers process at sustainable rate
+- **Batch writes:** Buffer small writes in memory, flush in batches to reduce I/O
+- **Partitioning/sharding:** Distribute writes across many nodes to avoid single write bottleneck
+- **Time-series DBs:** For append-only time-indexed data (InfluxDB, TimescaleDB)
+
+```
+Write-heavy architecture:
+[Producers] → [Kafka] → [Consumer Workers] → [Write-Optimized DB]
+```
+
+**Diagnosing your workload:** Profile your DB's query mix using slow query logs and pg_stat_statements (PostgreSQL) or Performance Insights (RDS).
+
+---
+
+### Q361. What is the horizontal session management challenge and how do you solve it?
+
+**Answer:**
+
+When you have a single server, session state lives in its memory — trivial. When you scale horizontally to 10 servers, a user's request might hit a different server each time, and their session data is on a server they're not talking to.
+
+**The problem:**
+```
+User logs in → Server 1 stores session in memory: { session_id: "abc123", user_id: 42 }
+Next request → Load balancer routes to Server 3
+Server 3: "I don't know session 'abc123'" → user is logged out
+```
+
+**Solution 1 — Sticky sessions:** Load balancer always routes user to the same server. Fragile (server failure = lost session), limits load balancing effectiveness.
+
+**Solution 2 — Centralized session store (recommended):**
+```python
+# Flask + Redis sessions
+from flask import Flask, session
+from flask_session import Session
+import redis
+
+app = Flask(__name__)
+app.config['SESSION_TYPE'] = 'redis'
+app.config['SESSION_REDIS'] = redis.Redis(host='redis-cluster', port=6379)
+Session(app)
+
+# Now any server can serve any user — sessions in Redis, not local memory
+@app.route('/dashboard')
+def dashboard():
+    if 'user_id' not in session:
+        return redirect('/login')
+    return f"Welcome, user {session['user_id']}"
+```
+
+**Solution 3 — Stateless tokens (JWT):** No server-side session at all. Client carries all session state in a signed JWT. Any server can verify the signature and extract claims without a storage lookup.
+
+**Trade-offs:**
+- Redis sessions: instant revocation, but requires Redis infrastructure
+- JWT: no server state, but revocation requires token blacklist (negates statelessness benefit)
+- Sticky sessions: simple but non-scalable
+
+---
+
+### Q362. What is cell-based architecture and how does it enable extreme scale?
+
+**Answer:**
+
+**Cell-based architecture** (also called "bulkhead decomposition at the infrastructure level") divides a large system into independent, isolated cells, each serving a subset of users. A cell is a complete, self-contained replica of the service stack — its own servers, databases, caches, and queues.
+
+**Why it's needed at extreme scale:**
+```
+Traditional architecture: All 1B users → same global infrastructure
+Problem:
+- A bug in a deployment affects ALL 1B users simultaneously
+- A load spike from one region degrades everyone
+- A data corruption corrupts global state
+```
+
+**Cell architecture:**
+```
+Cell A: users 1–50M    → dedicated app servers + DB cluster + Redis
+Cell B: users 50M–100M → dedicated app servers + DB cluster + Redis
+...
+Cell Z: users 950M–1B  → dedicated app servers + DB cluster + Redis
+```
+
+**Benefits:**
+- **Blast radius control:** A deployment bug only affects 1 cell (50M users), not all 1B
+- **Progressive rollouts:** Deploy to 1 cell first (canary by user segment), validate, then roll to all cells
+- **Regional independence:** A cell per region = no cross-region latency for most operations
+- **Simpler capacity planning:** Each cell has the same size; add capacity by adding cells
+
+**User routing:** A global routing layer maps user_id → cell_id. This mapping is stored in a simple lookup table (read-heavy, changes rarely).
+
+**Used by:** Slack (hundreds of cells), Amazon (AZ-based cells), LinkedIn (member isolation clusters).
+
+**Trade-offs:** Cross-cell operations (finding mutual friends, cross-user transactions) require expensive cross-cell coordination. Design APIs to minimize cross-cell calls.
 
 ---
 
@@ -1131,6 +1363,133 @@ Server count:
 
 ---
 
+### Q363. What are non-functional requirements and how do you identify them in system design?
+
+**Answer:**
+
+**Non-functional requirements (NFRs)** define *how* a system behaves rather than *what* it does. They're often called quality attributes or system constraints. Failing to address NFRs causes most production incidents.
+
+**Categories of NFRs:**
+
+**Performance:**
+- Latency: "API p99 latency < 200ms"
+- Throughput: "Handle 10,000 requests/second"
+
+**Scalability:**
+- "System should scale to 100M users without architectural changes"
+
+**Availability:**
+- "99.99% uptime (< 53 min/year downtime)"
+
+**Reliability & Consistency:**
+- "No data loss if any single server fails"
+- "Strong consistency for financial transactions; eventual consistency for social feeds"
+
+**Security:**
+- "All data at rest and in transit must be encrypted"
+- "PCI-DSS compliance required for payment processing"
+
+**Maintainability:**
+- "New engineers should be able to deploy independently within 2 weeks"
+
+**How to elicit NFRs in a system design interview:**
+
+Ask explicit questions:
+- "What's the expected scale? Users, QPS, data volume?"
+- "What's the acceptable latency for the critical user path?"
+- "Is this read-heavy or write-heavy?"
+- "Are there consistency requirements, or is eventual consistency OK?"
+- "What are the durability requirements? Can we lose recent data?"
+
+**Why they constrain architecture:** 99.99% availability forces multi-AZ deployment. <50ms p99 latency forbids synchronous calls to slow third parties. Strong consistency restricts horizontal sharding. Document these decisions explicitly.
+
+---
+
+### Q364. How do you approach data modeling in a system design interview?
+
+**Answer:**
+
+Data modeling is one of the most underrated parts of a system design interview. Strong data modeling demonstrates deep understanding of requirements and reveals implicit constraints.
+
+**Step-by-step approach:**
+
+**1. Identify the core entities:**
+For a URL shortener: `User`, `URL` (original + short code), `Click` (analytics).
+
+**2. Define relationships:**
+```
+User (1) ──creates──→ (many) URL
+URL (1) ──has──→ (many) Click
+```
+
+**3. Choose storage type based on access patterns:**
+```
+Access patterns:
+- GET /s/abc123 → lookup short_code → original_url (fast, high volume)
+- POST /shorten → create new mapping
+- GET /analytics?url=abc123 → aggregate click counts
+
+→ Short code lookups: Redis or key-value store (O(1) lookup)
+→ Click analytics: write-optimized DB or time-series DB
+→ User data: relational (PostgreSQL)
+```
+
+**4. Design the schema with constraints in mind:**
+```sql
+CREATE TABLE urls (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID REFERENCES users(id),
+    short_code VARCHAR(8) UNIQUE NOT NULL,  -- indexed
+    long_url   TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    click_count BIGINT DEFAULT 0
+);
+CREATE INDEX idx_short_code ON urls(short_code);  -- critical hot path
+```
+
+**5. Think about scale:**
+- Will this table have 1B rows? Do you need sharding?
+- Is the ID sequential (hotspot) or distributed (UUID, snowflake ID)?
+- Will click_count have write contention? (Yes → use Redis counter, sync to DB periodically)
+
+---
+
+### Q365. What are the most common mistakes in system design interviews and how do you avoid them?
+
+**Answer:**
+
+Understanding failure patterns is as important as knowing design patterns.
+
+**Mistake 1 — Jumping to solutions without clarifying requirements:**
+```
+Interviewer: "Design Twitter"
+Candidate:   "OK, so I'll use Kafka and a microservices architecture..."
+Problem:     Did you ask about scale? Read vs. write ratio? Which features?
+Fix:         "Before I start, let me clarify scope. Is this for posting tweets,
+              the feed, or both? What's the expected scale?"
+```
+
+**Mistake 2 — Ignoring non-functional requirements:**
+Designing a system without asking about latency requirements, consistency model, or availability needs. These constraints drive 80% of architectural decisions.
+
+**Mistake 3 — No back-of-envelope estimation:**
+Jumping to specific technologies without confirming the scale. Is this 10K users (SQLite works) or 1B users (need distributed systems)? Estimation validates your architecture choices.
+
+**Mistake 4 — Over-engineering:**
+Adding Kafka, 12 microservices, and machine learning to a system that 10K users will use. Shows lack of judgment.
+
+**Mistake 5 — Not explaining trade-offs:**
+Saying "I'll use Cassandra" without explaining *why* — what specific property makes it the right choice? And what are you giving up?
+
+**Mistake 6 — Silent design:**
+Working in silence. Interviewers need to hear your reasoning. Think out loud: "I'm choosing eventual consistency here because strong consistency would require distributed locking, which would add 20-50ms to every write."
+
+**Mistake 7 — Ignoring failure cases:**
+What happens when the database is down? When the cache is full? When a downstream service is slow? Production systems fail — good designs anticipate it.
+
+---
+
 ## Network & Protocol Deep Dives
 
 ---
@@ -1457,6 +1816,130 @@ async def github_webhook(
 
 ---
 
+### Q366. What is the QUIC protocol and why was HTTP/3 built on it?
+
+**Answer:**
+
+**QUIC** (originally by Google, now IETF standard) is a transport protocol built on UDP that reimplements and improves upon many TCP features while eliminating fundamental TCP limitations.
+
+**TCP's fundamental problems:**
+
+**1. Head-of-line blocking:** TCP is an ordered byte stream. If one packet is lost, all subsequent packets wait for retransmission — even if those packets are for a completely independent HTTP/2 stream.
+
+**2. Connection establishment latency:** TCP requires a 3-way handshake. TLS adds 1-2 more round trips. Total: 2-3 RTT before the first byte of data can be sent.
+
+**3. Connection migration:** If your IP changes (switching from WiFi to cellular), the TCP connection dies and must be re-established.
+
+**QUIC solutions:**
+
+**1. Per-stream packet loss recovery:** Packet loss only blocks the affected stream, not others. HTTP/3 over QUIC truly eliminates head-of-line blocking.
+
+**2. 0-RTT and 1-RTT handshake:** QUIC combines transport and TLS handshakes. First connection: 1 RTT. Resuming a recent connection: 0 RTT (send data with the handshake).
+
+```
+TCP + TLS 1.3:    [SYN] → [SYN-ACK] → [ACK + ClientHello] → [ServerHello] → [Data]
+                  3 round trips before first data
+QUIC:             [Initial (ClientHello)] → [Handshake] → [Data]
+                  1 round trip before first data
+```
+
+**3. Connection ID migration:** QUIC connections are identified by a connection ID, not IP:port tuples. If IP changes, the connection continues seamlessly.
+
+**Adoption:** HTTP/3 is supported by Chrome, Firefox, and most major CDNs. About 30% of web traffic is HTTP/3. QUIC is also used for video streaming (YouTube, Facebook video) and gaming.
+
+---
+
+### Q367. What is mTLS and why is it essential for zero-trust microservices?
+
+**Answer:**
+
+**mTLS (mutual TLS)** is standard TLS with one addition: the client also presents a certificate to the server. Both sides verify each other's identity, not just the client verifying the server.
+
+**Standard TLS (one-way):**
+```
+Client → "Who are you?"
+Server → presents certificate → Client verifies → trusted
+Server → doesn't know if client is legitimate
+```
+
+**mTLS (two-way):**
+```
+Client → presents certificate → Server verifies → trusted
+Server → presents certificate → Client verifies → trusted
+Both sides authenticated before data exchange
+```
+
+**Why microservices need mTLS:**
+
+In a zero-trust network, "inside the cluster" doesn't mean trusted. A compromised service could impersonate other services. Without mTLS, service A can't verify that the response claiming to come from service B actually did.
+
+```
+Without mTLS:
+Attacker compromises Service X
+Service X calls Service B as if it were Service A
+Service B: "I'll trust any caller inside the cluster"
+→ Attacker can call any internal API
+
+With mTLS:
+Service X needs Service A's private key to impersonate it
+If it doesn't have the private key → certificate verification fails → request rejected
+```
+
+**Implementation with a service mesh:**
+```yaml
+# Istio — enable mTLS globally, no application code changes
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+spec:
+  mtls:
+    mode: STRICT  # all services must use mTLS
+```
+
+**Certificate management:** mTLS requires rotating certificates. Service meshes (Istio, Linkerd) handle certificate issuance (via their own CA) and rotation automatically — certificates typically valid for 24 hours.
+
+---
+
+### Q368. What is DNS-based vs service registry-based service discovery?
+
+**Answer:**
+
+In a microservices system, services must find each other. **Service discovery** is the mechanism by which they do this dynamically — as instances scale up/down, their addresses change.
+
+**DNS-based service discovery:**
+```
+Order Service wants to call User Service
+→ DNS lookup: user-service.default.svc.cluster.local → 10.0.2.45
+→ Each pod in "user-service" is added as a DNS A record
+→ DNS round-robin across healthy pods
+```
+
+Kubernetes uses this natively. Every Service object gets a DNS name. Client-side: just use the hostname, no library needed.
+
+✅ Universal (every language has a DNS client)
+✅ No additional infrastructure
+❌ DNS TTL causes stale entries when instances fail (requires low TTL, which adds DNS load)
+❌ No rich metadata (health, version, load)
+
+**Service registry-based discovery (Consul, Eureka, etcd):**
+```
+Service starts → registers itself: {name: "user-service", address: "10.0.2.45", health_check: "/health"}
+Client queries registry: "Give me all healthy user-service instances"
+→ Registry returns live list based on recent health checks
+Client picks one (round-robin, least-connections, etc.)
+```
+
+✅ Rich metadata (health status, version, region, load)
+✅ Near-real-time: instances deregister on failure
+✅ Client-side load balancing with smart routing
+❌ Requires additional infrastructure (Consul cluster)
+❌ Service mesh dependency or dedicated client library
+
+**Modern practice:** Kubernetes DNS for most internal service communication. Consul or Istio service mesh when you need traffic management, circuit breaking, or cross-cluster discovery.
+
+---
+
 ## Storage Systems
 
 ---
@@ -1715,6 +2198,115 @@ def analytics_consumer():
 # None block each other
 # New services can join and replay history
 ```
+
+---
+
+### Q369. What is the difference between block storage, file storage, and object storage?
+
+**Answer:**
+
+These are three fundamentally different ways of storing data, each optimized for different access patterns.
+
+**Block storage:** Raw storage volumes presented to the OS as a hard drive. The OS manages the file system on top. Used for databases, VMs, and applications that need raw disk access.
+- Examples: AWS EBS, GCP Persistent Disk, NVMe SSD
+- Access: Direct block-level I/O
+- Latency: Sub-millisecond (good for databases)
+- ❌ Cannot be shared between servers simultaneously (usually)
+- ✅ Best performance for I/O-intensive workloads (databases, OS volumes)
+
+**File storage (NAS/NFS):** A traditional hierarchical file system (directories and files) mounted over a network. Multiple servers can mount the same filesystem simultaneously.
+- Examples: AWS EFS, NFS, SMB/CIFS, Samba
+- Access: POSIX file system operations (open, read, write, seek)
+- ✅ Shared access from multiple servers
+- ✅ Familiar interface — works like a local hard drive
+- ❌ More expensive, lower throughput than object storage at scale
+
+**Object storage:** Flat namespace — no directories. Each object has a unique key, value (data), and metadata. Access via HTTP REST API.
+- Examples: AWS S3, GCP Cloud Storage, Azure Blob Storage
+- Access: HTTP GET/PUT/DELETE per object
+- ✅ Massively scalable (exabytes), cheap at scale
+- ✅ Perfect for large, unstructured data (ML datasets, images, videos, logs, backups)
+- ❌ No random writes — must overwrite the whole object
+- ❌ Higher latency than block storage
+
+| | Block | File | Object |
+|--|-------|------|--------|
+| Database storage | ✅ | Possible | ❌ |
+| ML training datasets | ❌ | ✅ | ✅ (best) |
+| Model artifacts | ❌ | ✅ | ✅ (best) |
+| Multi-server shared | ❌ | ✅ | ✅ |
+
+---
+
+### Q370. What is RAID and when is it still relevant in modern systems?
+
+**Answer:**
+
+**RAID (Redundant Array of Independent Disks)** combines multiple physical disks into one logical unit to improve performance, capacity, or fault tolerance. Originally hardware-based; now often software-implemented.
+
+**Common RAID levels:**
+
+**RAID 0 (striping):** Data split across all disks. Performance improves proportionally (4 disks = 4x read/write speed). Zero redundancy — one disk failure loses all data.
+- Use: Scratch space, temporary caches where speed matters and data loss is acceptable
+
+**RAID 1 (mirroring):** Data duplicated on 2+ disks. One disk can fail with no data loss. Write performance same as single disk; read performance can be doubled (read from either mirror).
+- Use: OS boot volumes, critical small datasets
+
+**RAID 5 (striping with parity):** Data and parity striped across 3+ disks. Can tolerate one disk failure. Efficient (only 1/N overhead). Rebuild after failure is slow.
+- Use: General-purpose NAS, database servers
+
+**RAID 10 (RAID 1+0):** Mirror pairs striped together. Combines speed of RAID 0 with redundancy of RAID 1. Needs 4+ disks, 50% overhead. Best performance + redundancy combination.
+- Use: High-performance databases, high-write workloads
+
+**Is RAID still relevant with cloud?** Yes, in specific contexts:
+- On-premises database servers where raw disk performance matters
+- Hypervisor storage backends
+- However, cloud block storage (EBS, PD) replicates data internally — no manual RAID needed
+- Object storage (S3) has 11 nines durability — no RAID needed
+
+---
+
+### Q371. What is storage tiering and how do you optimize for cost vs. performance?
+
+**Answer:**
+
+**Storage tiering** organizes data across multiple storage classes based on access frequency and cost sensitivity — hot data on fast/expensive storage, cold data on slow/cheap storage.
+
+**Typical tier hierarchy (fastest to cheapest):**
+
+| Tier | Technology | Cost | Latency | Use case |
+|------|-----------|------|---------|---------|
+| Hot (L1) | In-memory (Redis) | ~$15/GB/mo | <1ms | Session data, hot cache |
+| Warm (L2) | SSD/NVMe | ~$0.08/GB/mo | <5ms | Active datasets, recent ML features |
+| Cool (L3) | HDD object storage | ~$0.023/GB/mo | ~100ms | 30-day training data, recent model versions |
+| Cold (L4) | Glacier/Nearline | ~$0.004/GB/mo | Minutes-hours | Compliance archives, old training data |
+
+**Automated tiering policies:**
+
+```python
+# S3 Intelligent-Tiering: AWS moves objects automatically
+aws s3api put-bucket-intelligent-tiering-configuration \
+    --bucket my-ml-data-bucket \
+    --id archive-policy \
+    --intelligent-tiering-configuration '{
+      "Id": "archive-policy",
+      "Status": "Enabled",
+      "Tierings": [
+        {"Days": 90, "AccessTier": "ARCHIVE_ACCESS"},
+        {"Days": 180, "AccessTier": "DEEP_ARCHIVE_ACCESS"}
+      ]
+    }'
+```
+
+**ML-specific tiering strategy:**
+```
+Active training data → S3 Standard (hot)
+Completed experiment artifacts → S3 Standard-IA (30+ day access delay acceptable)
+Old model versions (>6 months) → Glacier Instant Retrieval (accessed rarely, retrieve in ms)
+Compliance/audit data (>2 years) → Glacier Deep Archive (~$0.001/GB/mo)
+```
+
+**Cost impact:** Moving 100TB from S3 Standard to Glacier Deep Archive saves ~$2,200/month. At petabyte scale, tiering is one of the highest-ROI cost optimizations available.
 
 ---
 
@@ -2229,6 +2821,139 @@ print(f"From {len(df)} unlabeled → {len(confident)} high-confidence labeled ex
 
 ---
 
+### Q372. What is continuous training (CT) and what triggers automatic model retraining?
+
+**Answer:**
+
+**Continuous Training (CT)** is the practice of automatically retraining ML models when predefined conditions are met — keeping models fresh without manual intervention. It's the "CD" (continuous deployment) of the ML lifecycle.
+
+**CT completes the MLOps loop:**
+```
+Data → Training → Deployment → Monitoring
+                                    ↓
+                         Trigger when quality degrades
+                                    ↓
+                         Automatic retraining (CT)
+```
+
+**Triggering strategies:**
+
+**1. Schedule-based:** Retrain on a fixed schedule regardless of performance.
+```python
+# Simple but robust — good starting point
+# Airflow DAG: retrain every Monday at 2am
+@dag(schedule_interval='0 2 * * 1')
+def retrain_churn_model():
+    new_data = load_last_7_days_data()
+    model = train(new_data)
+    if evaluate(model) > baseline:
+        deploy(model)
+```
+
+**2. Drift-triggered:** Retrain when feature or prediction distribution shifts beyond a threshold.
+```python
+if psi_score > 0.2:  # significant distribution shift
+    trigger_retraining()
+```
+
+**3. Performance-triggered:** Retrain when model quality (measured via ground truth labels) drops below SLO.
+```python
+if recent_accuracy < 0.90 and baseline_accuracy == 0.94:
+    trigger_retraining()
+```
+
+**4. Data volume-triggered:** Retrain when a significant amount of new labeled data has accumulated.
+```python
+if new_labeled_examples > 50_000:
+    trigger_retraining()
+```
+
+**Retraining vs. fine-tuning:** Full retraining (from scratch on all data) is more expensive but more reliable. Fine-tuning (continue training on new data from current weights) is faster but risks catastrophic forgetting.
+
+---
+
+### Q373. What is a model rollback and how does it differ from rolling back application code?
+
+**Answer:**
+
+**Application code rollback:** Re-deploy the previous Docker image. Fast (~minutes), deterministic. Previous code is identical to what ran before.
+
+**Model rollback:** Re-deploy a previously validated model artifact. Similar mechanically, but has critical ML-specific challenges:
+
+**Challenge 1 — Training data has changed:**
+If you retrained on new data, the old model was trained on a different data distribution. Rolling back the model but keeping new data flowing in may not restore original behavior — because the data pipeline has changed too.
+
+**Challenge 2 — Feature pipeline changes:**
+If you also updated the feature computation logic, rolling back the model without rolling back the feature pipeline creates a training-serving skew — the model receives features it was never trained on.
+
+**Challenge 3 — No "previous version" if retrained:**
+Unlike code where the previous commit always exists, the previous model weights may not be stored if your model registry doesn't enforce artifact versioning.
+
+**Solution — Model registry with complete lineage:**
+```yaml
+# Every model artifact should capture:
+model_version: "v3.2.1"
+trained_at: "2024-09-15"
+model_weights: s3://models/churn_v3.2.1.pkl
+preprocessing_pipeline: s3://models/churn_v3.2.1_pipeline.pkl  # MUST match!
+training_data_version: "s3://data/churn_training_2024Q3"
+feature_schema_version: "v4.2"
+code_commit: "a1b2c3d"
+evaluation_metrics: {auc: 0.91, precision: 0.85}
+```
+
+**Rollback procedure:**
+1. Load previous model artifact + its preprocessing pipeline from registry
+2. Verify the current feature pipeline is compatible with the old model's expected schema
+3. If incompatible → roll back feature pipeline too
+4. Deploy previous artifact
+5. Monitor metrics — confirm they return to pre-rollback baseline
+
+---
+
+### Q374. What is multi-armed bandit testing and when does it outperform traditional A/B testing?
+
+**Answer:**
+
+**Traditional A/B testing:** Split traffic 50/50 between two variants. Run for a fixed duration (typically 1-2 weeks). Analyze results. Deploy winner.
+
+**Problem:** During the test, 50% of users are getting the worse experience. You're "paying" a fixed exploration cost regardless of how clearly one variant is winning.
+
+**Multi-armed bandit (MAB):** Dynamically adjusts traffic allocation based on real-time results — routes more traffic to the better-performing variant as evidence accumulates.
+
+```
+Initial:  Variant A: 50%, Variant B: 50%
+Day 1:    A CTR = 5%, B CTR = 7% → increase B allocation
+Day 3:    A: 25%, B: 75%
+Day 7:    A: 10%, B: 90%
+→ Less time spent sending users to the worse variant
+```
+
+**Epsilon-greedy algorithm:**
+```python
+epsilon = 0.1  # 10% exploration rate
+
+def choose_variant():
+    if random.random() < epsilon:
+        return random.choice(['A', 'B'])  # explore
+    else:
+        return max(['A', 'B'], key=lambda v: get_ctr(v))  # exploit best
+```
+
+**When MAB outperforms A/B:**
+- Short experiment windows (news homepage — content is stale in days, not weeks)
+- High cost of showing poor variant (e-commerce checkout — each bad experience costs revenue)
+- Many variants (10+ button designs — A/B would take months; MAB adapts in days)
+
+**When A/B is better:**
+- Long-term effects matter (subscription retention takes months to measure)
+- Statistical rigor required (clinical trials, regulatory approval)
+- Interaction effects between features (MAB can't attribute causality)
+
+**Thompson Sampling:** More sophisticated MAB — models uncertainty about each variant's true conversion rate using a Beta distribution. Naturally balances exploration and exploitation.
+
+---
+
 ## Security for ML/AI Systems
 
 ---
@@ -2449,6 +3174,142 @@ for epoch in range(50):
 epsilon = privacy_engine.get_epsilon(delta=1e-5)
 print(f"Privacy guarantee: ε = {epsilon:.2f}")  # Lower = more private
 ```
+
+---
+
+### Q375. What is differential privacy and how is it applied to protect ML training data?
+
+**Answer:**
+
+**Differential privacy (DP)** is a mathematical framework that guarantees that the output of a computation (or ML model) reveals almost nothing about any individual's data. It provides a provable privacy guarantee: an observer looking at your trained model cannot determine whether any specific person was in the training set.
+
+**Core idea — noise injection:** Add carefully calibrated random noise to the training process. This noise is large enough to hide individual records but small enough that aggregate patterns (what the model learns) remain accurate.
+
+**Formal guarantee:** A mechanism is ε-differentially private if:
+```
+P[output on dataset D] ≤ e^ε × P[output on dataset D without person X]
+```
+Small ε = strong privacy. Typical values: ε = 1 (strong), ε = 10 (moderate).
+
+**Implementation — DP-SGD (Differentially Private Stochastic Gradient Descent):**
+```python
+from opacus import PrivacyEngine
+
+model = MyModel()
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+# Wrap with DP
+privacy_engine = PrivacyEngine()
+model, optimizer, data_loader = privacy_engine.make_private(
+    module=model,
+    optimizer=optimizer,
+    data_loader=train_loader,
+    noise_multiplier=1.0,    # controls noise magnitude
+    max_grad_norm=1.0,       # clips individual gradients (bounds sensitivity)
+)
+
+# Train as usual — DP is applied automatically
+for x, y in data_loader:
+    loss = criterion(model(x), y)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()  # adds noise to gradients, enforces DP guarantee
+
+epsilon = privacy_engine.get_epsilon(delta=1e-5)
+print(f"ε = {epsilon:.2f}")  # The privacy guarantee
+```
+
+**Real-world applications:** Apple uses DP for collecting emoji usage statistics. Google uses it for Chrome's RAPPOR protocol. Medical ML (training on patient data without violating HIPAA).
+
+**Privacy-utility trade-off:** More privacy (smaller ε) requires more noise → less accurate model. There's no free lunch. DP often works well for large datasets where the noise averages out; struggles for small datasets.
+
+---
+
+### Q376. What is a model extraction attack and how do you defend against it?
+
+**Answer:**
+
+A **model extraction attack** (also called model stealing) is when an adversary queries a deployed ML model's API repeatedly to reconstruct a functionally equivalent copy of the model — without access to the training data or original weights.
+
+**How it works:**
+```
+Attacker queries: model.predict(x_1) → 0.82, model.predict(x_2) → 0.15, ...
+                  [sends millions of crafted queries]
+Attacker trains a substitute model on (x_i, prediction_i) pairs
+Substitute model ≈ original model (similar accuracy, similar behavior)
+```
+
+**Why it's a threat:**
+- Model is the core IP of an ML company (cost millions to train)
+- Attacker can extract a model that was trained on private data
+- Extracted model can be used to find adversarial examples offline
+
+**Active example:** Tesla sued for allegedly extracting autopilot model weights via repeated queries.
+
+**Defense strategies:**
+
+**1. Rate limiting and anomaly detection:**
+```python
+# Flag accounts querying with unusual patterns
+if queries_per_hour(user) > 10_000:
+    return rate_limit_response()
+if entropy_of_queries(recent_queries) > threshold:
+    flag_for_review(user)
+```
+
+**2. Prediction rounding:** Return rounded probabilities (0.8 instead of 0.7823) — degrades attacker's substitute model accuracy.
+
+**3. Watermarking:** Train the model to return specific outputs for certain "trap" inputs. If the attacker's model also shows these behaviors, it's provably stolen.
+
+**4. Query monitoring:** Log all queries. Detect systematic coverage of the input space (random queries have low systematic coverage; extraction attacks are organized).
+
+**5. Membership inference defense:** Prevent distinguishing whether a specific record was in training data — this also limits extraction effectiveness.
+
+---
+
+### Q377. What is data poisoning and how do you detect it in ML systems?
+
+**Answer:**
+
+**Data poisoning** is an attack where adversaries inject malicious training examples into the training dataset to manipulate the model's behavior — causing specific misclassifications or degrading overall performance.
+
+**Types of poisoning attacks:**
+
+**Untargeted (availability attack):** Add many mislabeled examples to degrade overall accuracy.
+```
+Normal training data:   90% correctly labeled
+After poisoning:        20% intentionally mislabeled
+→ Model accuracy drops from 95% to 72%
+```
+
+**Targeted (backdoor attack):** Train the model to misclassify specific inputs while behaving correctly on everything else. A "trigger pattern" causes the malicious behavior.
+```
+Normal image → correct classification
+Image with a small trigger pattern (e.g., specific pixel pattern in corner) → always classified as "safe"
+→ Attacker physically adds trigger to bypass security classifier
+```
+
+**BadNets (2017):** Classic backdoor attack on neural networks. Demonstrated on MNIST and traffic sign classifiers.
+
+**Detection strategies:**
+
+**1. Dataset inspection:**
+```python
+# Statistical outlier detection on training labels
+from sklearn.ensemble import IsolationForest
+# Train on features, find examples with anomalous feature-label combinations
+clf = IsolationForest(contamination=0.05)
+anomaly_scores = clf.fit_predict(X_train)
+suspicious_idx = np.where(anomaly_scores == -1)
+```
+
+**2. Data provenance and supply chain:** Track where training data came from. Verify data from external sources hasn't been tampered with. Use cryptographic checksums on trusted datasets.
+
+**3. Certified defenses (RONI — Reject on Negative Impact):**
+Remove training examples that, when included, significantly reduce performance on a trusted validation set.
+
+**4. Neural cleanse (for backdoor detection):**
+Search for trigger patterns by optimizing an input to cause misclassification to a target class. If a small trigger achieves high misclassification, a backdoor likely exists.
 
 ---
 
@@ -3034,6 +3895,149 @@ async def bulk_predict(user_ids: list) -> list:
 # Concurrent async: 1 × 50ms (all DB fetches in parallel) = 0.05 seconds
 # 100x faster!
 ```
+
+---
+
+### Q378. What is the difference between spot, on-demand, and reserved instances for ML workloads?
+
+**Answer:**
+
+Cloud compute pricing comes in three tiers, each suited to different workload characteristics.
+
+**On-demand instances:** Pay by the hour/second, no commitment. Start/stop anytime.
+- Cost: Full price (baseline)
+- Use for: Unpredictable workloads, short jobs, testing
+- Not suitable for: Long training runs (expensive)
+
+**Reserved instances (1-3 year commitment):** Pre-commit to a specific instance type. 40-70% discount vs. on-demand.
+- Cost: ~40-60% cheaper than on-demand
+- Use for: Always-on ML inference servers, production database servers
+- ❌ Upfront cost/commitment, less flexibility
+
+**Spot instances:** Spare cloud capacity sold at 70-90% discount. Can be terminated with 2-minute warning when capacity is needed.
+- Cost: ~70-90% cheaper than on-demand (p3.8xlarge: $12/hr on-demand → ~$3/hr spot)
+- Use for: ML training (can checkpoint and resume), batch inference, data processing
+- ❌ Can be interrupted — requires fault-tolerant job design
+
+**ML workload mapping:**
+
+| Workload | Best instance type | Why |
+|----------|------------------|-----|
+| Model training (hours) | Spot | Interruptible; save 80%; checkpoint every N steps |
+| Hyperparameter search | Spot | Many parallel jobs; some failures OK |
+| Batch inference | Spot | Async, retryable |
+| Real-time inference API | On-demand or Reserved | Cannot be interrupted; reserved if constant |
+| Interactive experimentation | On-demand | Unpredictable usage; spot disruptions hurt productivity |
+
+**Spot training with checkpointing:**
+```python
+# Save checkpoint every 1000 steps; resume on spot termination
+def train_with_checkpointing(model, data, checkpoint_dir):
+    start_step = load_latest_checkpoint(model, checkpoint_dir)
+    
+    for step in range(start_step, total_steps):
+        loss = train_step(model, data.next_batch())
+        
+        if step % 1000 == 0:
+            save_checkpoint(model, step, checkpoint_dir)
+        
+        # AWS sends SIGTERM 2 minutes before spot termination
+        if received_sigterm():
+            save_checkpoint(model, step, checkpoint_dir)
+            sys.exit(0)  # clean exit; job scheduler will restart on new spot
+```
+
+---
+
+### Q379. What is model compression and how does it reduce inference costs?
+
+**Answer:**
+
+**Model compression** reduces model size and computational requirements for inference while maintaining acceptable accuracy. Compressed models run faster, cheaper, and can be deployed on resource-constrained devices.
+
+**Main techniques:**
+
+**1. Quantization** (most impactful): Reduce numerical precision of weights/activations.
+```python
+# PyTorch INT8 quantization (post-training)
+model_int8 = torch.quantization.quantize_dynamic(
+    model,
+    {torch.nn.Linear, torch.nn.Conv2d},
+    dtype=torch.qint8
+)
+# Typically: 4x smaller, 2-4x faster, <1% accuracy loss
+```
+
+**2. Pruning:** Remove unimportant weights (set to zero) or entire neurons/channels.
+```python
+import torch.nn.utils.prune as prune
+
+# Remove 40% of weights with smallest magnitude (unstructured pruning)
+prune.l1_unstructured(module=model.fc1, name='weight', amount=0.4)
+
+# After pruning → fine-tune to recover accuracy
+# Sparse model: 40% fewer parameters to compute
+```
+
+**3. Knowledge distillation:** Train a small "student" model to mimic a large "teacher" model.
+```python
+# Student learns from teacher's soft probabilities, not hard labels
+teacher_logits = teacher_model(x)
+student_logits = student_model(x)
+
+distillation_loss = F.kl_div(
+    F.log_softmax(student_logits / temperature, dim=1),
+    F.softmax(teacher_logits / temperature, dim=1),
+    reduction='batchmean'
+)
+# Student is 10-100x smaller; retains 90-95% of teacher's accuracy
+```
+
+**4. Low-rank decomposition:** Factorize weight matrices into smaller matrices (SVD). Reduces parameter count with minimal accuracy loss.
+
+**Cost impact:** Quantizing a GPT-2 (124M params) inference service from FP32 to INT8: model size 400MB → 100MB, inference latency 40ms → 12ms, serving cost reduced by ~70%.
+
+---
+
+### Q380. What is FinOps and how do ML teams implement it?
+
+**Answer:**
+
+**FinOps (Financial Operations for Cloud)** is the practice of bringing financial accountability to cloud spending — combining engineering, finance, and business to optimize cloud cost and value. For ML teams, it means spending the minimum necessary to get the model quality and serving performance you need.
+
+**The FinOps cycle:**
+```
+Inform → Optimize → Operate
+  ↑                    ↓
+  ←←←←←←←←←←←←←←←←←←
+```
+
+**Inform:** Understand where money is going.
+```bash
+# AWS Cost Explorer breakdown for ML workloads:
+# EC2 (GPU training):     $12,000/month (60%)
+# S3 (training data):     $3,000/month  (15%)
+# SageMaker endpoints:    $4,000/month  (20%)
+# Data transfer:          $1,000/month  (5%)
+```
+
+**Optimize:** Reduce waste.
+- **Training:** Switch to spot instances (save 70-80%)
+- **Experiments:** Run hyperparameter searches at lower precision (faster + cheaper)
+- **Storage:** Implement tiering (archive old training data to Glacier)
+- **Inference:** Quantize models, implement auto-scaling (scale to zero when idle)
+- **Data transfer:** Keep training data in the same region as training instances
+
+**Operate:** Create accountability.
+- **Tagging:** Tag every resource with team/project/model — know what each thing costs
+```bash
+aws ec2 create-tags --resources i-xxx --tags Key=Project,Value=churn-model Key=Team,Value=ml-platform
+```
+- **Budgets + alerts:** Set budget alerts so teams know when they're overspending
+- **Cost per prediction:** Track unit economics — $/1M predictions trending up? Find out why.
+- **Chargeback:** Bill each team for their actual cloud usage — creates accountability
+
+**Culture:** FinOps only works when engineers care about cost. Make cost visible (dashboards, weekly reports). Celebrate cost savings as wins.
 
 ---
 

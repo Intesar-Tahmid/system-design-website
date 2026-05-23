@@ -452,6 +452,134 @@ If each query takes 5ms, that's 505ms of database time for a simple list. Scale 
 
 ---
 
+### Q381. What is the difference between linearizability and serializability, and why does this distinction matter for distributed system design? *(DDIA Ch9)*
+
+**Linearizability** is a *single-object, single-operation* consistency guarantee: once a write completes, all subsequent reads — from any node — must return that value or a later one. The system appears as if there is exactly one copy of the data and operations are atomic.
+
+**Serializability** is a *transaction-level* guarantee: the result of executing concurrent transactions must be equivalent to some serial (one-at-a-time) execution. It says nothing about real-time ordering.
+
+| Property | Linearizability | Serializability |
+|---|---|---|
+| Scope | Individual read/write ops | Multi-operation transactions |
+| Ordering | Real-time order preserved | Serial order preserved (not necessarily real-time) |
+| Overhead | High — requires coordination | High — but different implementation |
+| Example | Registers in Zookeeper, etcd | PostgreSQL SERIALIZABLE isolation |
+
+**Strict serializability (SSI)** = serializability + linearizability. This is what Spanner provides via TrueTime.
+
+**Why it matters in practice:**
+- A system can be serializable but NOT linearizable: if a transaction reads stale data from a lagging replica, the serial order is preserved but real-time ordering is not
+- A system can be linearizable but NOT serializable: a single CAS (compare-and-swap) operation on Redis is linearizable but doesn't provide transaction semantics across keys
+- Most distributed databases (Cassandra, DynamoDB default) provide NEITHER — they are eventually consistent
+- When designing a system requiring both (e.g., financial ledger), you need a database with strict serializability: CockroachDB, Spanner, or FaunaDB
+
+**Interview decision framework:**
+- Need strong per-object guarantees? → Linearizability (etcd for leader election, ZooKeeper for locks)
+- Need multi-row atomic operations? → Serializability (PostgreSQL SERIALIZABLE)
+- Need both? → Strict serializability (CockroachDB, Spanner) at higher cost/latency
+
+---
+
+### Q382. How do fencing tokens prevent split-brain in distributed lock systems, and what failure mode do they solve? *(DDIA Ch8)*
+
+**The problem:** Distributed locks (via Redis, ZooKeeper) have a fundamental race condition. A client acquires a lock, pauses (GC pause, network delay), the lock expires, another client acquires the lock, then the first client resumes and still believes it holds the lock. Both clients now operate simultaneously — **split-brain**.
+
+**Fencing tokens** solve this by attaching a monotonically increasing token to each lock grant:
+
+```
+Client A acquires lock → receives token 33
+Client B acquires lock (after A's lock expired) → receives token 34
+Client A resumes, tries to write with token 33
+Storage service checks: 33 < 34 (current fence) → REJECTS A's write
+```
+
+**Implementation:**
+
+```python
+# ZooKeeper-based fencing token example
+class FencedLockClient:
+    def acquire_lock(self) -> int:
+        # ZooKeeper ephemeral sequential node gives monotonic token
+        node = self.zk.create("/locks/mylock-", ephemeral=True, sequence=True)
+        token = int(node.split("-")[-1])
+        return token
+    
+    def write_with_fence(self, storage, data, token: int):
+        # Storage must enforce: reject writes with token < current max
+        storage.write(data, fence_token=token)
+```
+
+**Storage-side enforcement (critical):**
+```python
+class FencedStorage:
+    def __init__(self):
+        self.max_seen_token = 0
+    
+    def write(self, data, fence_token: int):
+        if fence_token < self.max_seen_token:
+            raise StaleTokenError(f"Token {fence_token} < current fence {self.max_seen_token}")
+        self.max_seen_token = fence_token
+        self._do_write(data)
+```
+
+**Why Redlock (Redis distributed lock) is problematic:**
+- No fencing token mechanism
+- Relies on timing assumptions that can be violated by GC pauses or NTP jumps
+- DDIA author Martin Kleppmann published a critique: "How to do distributed locking" — Redlock cannot guarantee safety under all failure conditions
+
+**Best practices:**
+- Use ZooKeeper or etcd for locks requiring fencing tokens (they generate monotonic version numbers natively)
+- Always pass the fencing token through to the resource being protected
+- The resource storage must be the final enforcer — the lock service alone cannot guarantee safety
+
+---
+
+### Q383. What is total order broadcast and how does it relate to consensus algorithms like Raft and Paxos? *(DDIA Ch9)*
+
+**Total order broadcast (atomic broadcast)** is a protocol ensuring:
+1. **Reliability:** If a message is delivered to one node, it is delivered to all non-crashed nodes
+2. **Total order:** All nodes deliver messages in the same order
+
+This is stronger than FIFO broadcast (per-sender ordering) and causal broadcast (causally-related ordering), but weaker than linearizability (real-time ordering).
+
+**Relationship to consensus:**
+Total order broadcast and consensus are **equivalent in power** — each can be implemented using the other:
+
+```
+Consensus → Total order broadcast:
+  - Propose each message as a consensus value
+  - Sequence numbers assigned by consensus rounds
+  - Paxos Multi-Paxos / Raft log replication IS total order broadcast
+
+Total order broadcast → Consensus:
+  - To agree on a value, broadcast proposals
+  - First delivered message = agreed value
+```
+
+**Raft implementation of total order broadcast:**
+
+```
+Leader receives client request
+→ Appends to its log (position = total order position)
+→ Replicates to followers
+→ Once majority ACK → commits (delivers to state machine)
+→ Leader notifies followers to commit
+→ All nodes apply log entries IN ORDER = total order broadcast
+```
+
+**Practical implications:**
+
+| System | How it uses TOB |
+|---|---|
+| Kafka partition | Total order within partition (leader's log) |
+| Raft/etcd | Log entries are total-ordered across cluster |
+| MySQL binlog replication | Total order on primary, replayed on replicas |
+| ZooKeeper ZAB protocol | Zookeeper Atomic Broadcast — their TOB implementation |
+
+**Key insight for system design:** Any system that needs linearizable writes can use total order broadcast — sequence the writes via TOB, then apply them deterministically. This is why state machine replication works: start from the same initial state, apply the same sequence of operations, always reach the same final state.
+
+---
+
 ## Database Internals
 
 ---
@@ -768,6 +896,159 @@ This is how large-scale ML systems run thousands of inference pods without exhau
 Session mode: One database connection per client session. Least efficient.
 Transaction mode: One database connection per transaction. Very efficient. Works for most ML workloads.
 Statement mode: One database connection per SQL statement. Most efficient. Only works for single-statement queries (no transactions spanning multiple statements).
+
+---
+
+### Q384. How does the LSM-tree storage engine work, and why is it preferred for write-heavy workloads over B-trees? *(DDIA Ch3)*
+
+**B-tree** is the dominant index structure for read-heavy workloads. Every write requires finding the right B-tree page and modifying it in-place — on disk, this means random I/O.
+
+**LSM-tree (Log-Structured Merge-tree)** flips this model: all writes are sequential. It's used by RocksDB, LevelDB, Cassandra, HBase, and Kafka's log storage.
+
+**LSM-tree write path:**
+
+```
+Write request
+→ Write to in-memory memtable (sorted, e.g., a red-black tree or skip list)
+→ Also append to WAL (for crash recovery)
+→ When memtable reaches size threshold → flush to disk as SSTable (Sorted String Table)
+→ Background: compact SSTables by merging (like merge sort)
+```
+
+**SSTable properties:**
+- Immutable — never modified after written
+- Keys sorted within each file
+- Each file has an associated bloom filter (fast miss detection)
+
+**Read path:**
+```
+1. Check memtable (most recent writes)
+2. Check level-0 SSTables (newest first — may overlap)
+3. Check level-1, level-2... (non-overlapping within a level)
+4. Bloom filter saves reads: if bloom says "not here" → skip file
+```
+
+**Compaction strategies:**
+
+| Strategy | How it works | Trade-offs |
+|---|---|---|
+| Size-tiered (Cassandra default) | Merge SSTables of similar size | Fast writes, large space amplification |
+| Leveled (LevelDB/RocksDB default) | Each level has fixed size budget, non-overlapping | Slower writes, better read performance, less space |
+| FIFO | Just delete oldest files | Log/time-series only |
+
+**LSM vs B-tree trade-offs:**
+
+| | LSM-tree | B-tree |
+|---|---|---|
+| Write throughput | High (sequential) | Lower (random I/O) |
+| Read throughput | Lower (check multiple files) | High (one tree traversal) |
+| Space amplification | Higher (multiple copies during compaction) | Lower |
+| Write amplification | Lower initially; compaction adds later | Higher (writes update pages multiple times) |
+| Range scans | Efficient (sorted SSTables) | Efficient |
+
+**RocksDB in practice:** Used as the storage engine in Kafka (log compaction), TiKV (distributed key-value), CockroachDB, and many embeddings databases.
+
+---
+
+### Q385. How does MVCC (Multi-Version Concurrency Control) enable non-blocking reads in PostgreSQL?
+
+**The problem MVCC solves:** Without MVCC, a read must wait for an in-progress write to complete (or vice versa). This serializes operations and destroys throughput.
+
+**MVCC approach:** Keep multiple versions of each row. Readers see a consistent snapshot; writers create new versions rather than modifying in-place.
+
+**PostgreSQL MVCC internals:**
+
+Each row has hidden system columns:
+```sql
+-- Conceptually, each tuple has:
+xmin  -- transaction ID that created this row version
+xmax  -- transaction ID that deleted/updated this row (0 = visible)
+ctid  -- physical location of this row version
+```
+
+**Read snapshot:** Every transaction gets a snapshot at its start time — a list of all in-progress transaction IDs. The transaction sees rows where:
+- `xmin` committed before the snapshot was taken
+- `xmax` is 0 OR `xmax` is in-progress at snapshot time (not yet committed)
+
+```sql
+-- Transaction T1 starts at xid=100
+-- T2 starts at xid=101, updates a row (creates new version with xmin=101)
+-- T1 still reads the old version (xmin=99, xmax=101) because 101 > 100
+-- T1 never blocks on T2
+```
+
+**Update mechanism (no in-place updates):**
+```
+UPDATE users SET name = 'Bob' WHERE id = 1;
+→ Mark old row version: xmax = current_txn_id
+→ Insert new row version: xmin = current_txn_id, name = 'Bob'
+→ Old version remains for concurrent readers
+```
+
+**Vacuum — the cleanup process:**
+- Dead row versions (both xmin and xmax committed) accumulate
+- `AUTOVACUUM` reclaims dead tuple space
+- Without vacuum: table bloat, performance degradation
+- `VACUUM FULL` rewrites table — acquires exclusive lock, use carefully
+
+**Isolation levels via MVCC:**
+- `READ COMMITTED` (default): snapshot per statement — each query sees latest committed data
+- `REPEATABLE READ`: snapshot at transaction start — consistent view throughout
+- `SERIALIZABLE (SSI)`: detects serialization anomalies (write skew) using predicate locks
+
+**Practical implication:** Long-running transactions in PostgreSQL are dangerous because they prevent vacuum from cleaning old row versions — causing "transaction ID wraparound" issues and table bloat.
+
+---
+
+### Q386. What is a covering index, and when does it eliminate the need to access the base table?
+
+**Standard index lookup (two-step):**
+```
+Query: SELECT email FROM users WHERE username = 'alice';
+1. Index scan on username index → find row pointer (ctid/primary key)
+2. "Heap fetch" — go to actual table page to get the email column
+```
+
+**Covering index:** An index that *contains all columns needed by the query*, eliminating the heap fetch.
+
+```sql
+-- Regular index
+CREATE INDEX idx_username ON users(username);
+
+-- Covering index (includes email)
+CREATE INDEX idx_username_covering ON users(username) INCLUDE (email);
+
+-- Query is now "index-only scan" — never touches the table
+EXPLAIN SELECT email FROM users WHERE username = 'alice';
+-- Output: Index Only Scan using idx_username_covering
+```
+
+**PostgreSQL syntax options:**
+```sql
+-- Option 1: Include non-key columns (PostgreSQL 11+)
+CREATE INDEX ON orders(customer_id) INCLUDE (status, created_at);
+
+-- Option 2: Composite index (all columns are key columns — affect sort order)
+CREATE INDEX ON orders(customer_id, status, created_at);
+-- This covers but also allows: WHERE customer_id = x ORDER BY status
+```
+
+**Visibility map caveat:** PostgreSQL index-only scans still must check the visibility map to confirm tuples are visible to the current transaction. After VACUUM, most pages are marked "all-visible" and the check is cheap.
+
+**When covering indexes shine:**
+
+| Use case | Why it helps |
+|---|---|
+| Dashboard aggregations | `SELECT COUNT(*), SUM(amount) WHERE date > x` — no table touch |
+| API pagination | `SELECT id, title, created_at FROM posts ORDER BY created_at` |
+| Reporting queries | Pre-computed column subsets for specific reports |
+
+**Cost-benefit analysis:**
+- **Pro:** Eliminates heap fetches (often the slowest part for index scans on large tables)
+- **Con:** Index is larger (stores extra column data), slower writes
+- **Rule of thumb:** Only add INCLUDE columns for queries that run frequently on large tables where heap fetches are measurable via `EXPLAIN ANALYZE`
+
+**Multi-column index prefix rule:** A composite index `(a, b, c)` covers queries filtering on `a`, `a,b`, or `a,b,c` — but NOT `b` alone or `b,c`. Design left-most columns as the most selective filter.
 
 ---
 
@@ -1112,6 +1393,204 @@ Dropout adds randomness to the network during training. It's applied to activati
 
 ---
 
+### Q387. What is the Pareto frontier in multi-objective ML, and how do you use it to make deployment decisions?
+
+When optimizing an ML model for production, you often have **conflicting objectives** — accuracy vs latency, precision vs recall, fairness vs accuracy. You cannot simultaneously maximize all metrics; improving one degrades another.
+
+**Pareto frontier:** The set of solutions where you cannot improve one objective without worsening another. Each point on the frontier represents a valid trade-off.
+
+**Example — model serving decision:**
+
+```
+Objective 1: Minimize inference latency (ms)
+Objective 2: Maximize accuracy (AUC)
+
+Model A: 50ms latency, 0.82 AUC  ← on Pareto frontier
+Model B: 80ms latency, 0.85 AUC  ← on Pareto frontier
+Model C: 80ms latency, 0.82 AUC  ← DOMINATED (A is better on both)
+Model D: 120ms latency, 0.88 AUC ← on Pareto frontier
+```
+
+Model C is **dominated** — never choose it. Models A, B, D are Pareto-optimal — the choice between them depends on business priorities.
+
+**When to use Pareto analysis:**
+
+| Decision | Objectives |
+|---|---|
+| Content moderation model | Precision vs recall vs inference cost |
+| Recommendation system | Relevance vs diversity vs freshness |
+| Fraud detection | TPR vs FPR vs latency |
+| Quantized model selection | Accuracy vs model size vs throughput |
+
+**Multi-objective optimization techniques:**
+- **Scalarization:** Combine objectives into single metric: `loss = α*accuracy + β*(1/latency)`. The weights encode business priorities.
+- **NSGA-II (Non-dominated Sorting Genetic Algorithm):** Evolutionary algorithm that maintains a diverse Pareto frontier population
+- **Bayesian multi-objective optimization:** Used in Ax (Meta's framework) and Optuna for hyperparameter search across multiple metrics
+
+**Production workflow:**
+1. Train a family of models with different capacity/speed trade-offs
+2. Evaluate all on your objective metrics
+3. Compute Pareto frontier — discard dominated models
+4. Present frontier to stakeholders: "Model A for mobile (low latency), Model D for desktop (best accuracy)"
+
+**LLM inference context:** RLHF fine-tuning directly uses Pareto trade-offs — reward model (helpfulness) vs KL divergence penalty (staying close to base model). The KL penalty coefficient is the scalarization weight.
+
+---
+
+### Q388. What is training-serving skew, how does it degrade ML model performance, and how do you detect and fix it?
+
+**Training-serving skew:** A mismatch between the data distribution or feature computation during model training vs. the data seen during production inference. The model performs well offline but degrades in production.
+
+**Root causes:**
+
+```
+1. Feature computation differences
+   Training:  age = (current_date - birth_date).days / 365  [at training time]
+   Serving:   age = user.age_at_signup  [stale value from profile]
+   
+2. Data pipeline divergence
+   Training:  Python Pandas transformation
+   Serving:   Java/Scala transformation (different rounding, null handling)
+   
+3. Temporal data leakage
+   Training:  Used future data (label leaked into features)
+   Serving:   Only past data available
+   
+4. Distribution shift
+   Training:  Historical data (pre-COVID user behavior)
+   Serving:   Current users (different patterns)
+```
+
+**Detection strategies:**
+
+```python
+# 1. Log features at serving time, compare to training distribution
+import scipy.stats as stats
+
+def detect_skew(training_feature: np.ndarray, serving_feature: np.ndarray):
+    ks_stat, p_value = stats.ks_2samp(training_feature, serving_feature)
+    psi = calculate_psi(training_feature, serving_feature)  # Population Stability Index
+    
+    if psi > 0.2:
+        alert("SEVERE skew detected")
+    elif psi > 0.1:
+        alert("Moderate skew — investigate")
+
+# 2. Shadow mode comparison
+# Run new model in shadow (no user impact) alongside production model
+# Compare feature vectors input to both models — they should match
+```
+
+**PSI (Population Stability Index):**
+- PSI < 0.1: No significant change
+- 0.1 ≤ PSI < 0.2: Moderate change, investigate
+- PSI ≥ 0.2: Major shift, likely retraining needed
+
+**Prevention — the gold standard:**
+Use **the same feature computation code** for training and serving:
+
+```python
+# Feature store approach (Feast, Tecton, Hopsworks)
+# ONE function, called at training time AND serving time
+
+def compute_user_features(user_id: str, as_of_time: datetime) -> dict:
+    # Point-in-time correct: uses data available at as_of_time
+    purchase_count = db.query(
+        "SELECT COUNT(*) FROM orders WHERE user_id = ? AND created_at <= ?",
+        user_id, as_of_time
+    )
+    return {"purchase_count": purchase_count}
+
+# Training: loop over historical as_of_times
+# Serving: as_of_time = now()
+```
+
+**Common fixes:**
+1. Migrate feature computation to a feature store
+2. Serialize scikit-learn pipelines (including preprocessing) with the model
+3. Add feature logging + distribution monitoring in production
+4. Integration tests comparing training features vs serving features for the same input
+
+---
+
+### Q389. What techniques address class imbalance in ML, and when should you use each?
+
+**Class imbalance** occurs when one class vastly outnumbers others — fraud detection (0.1% fraud), medical diagnosis, anomaly detection. A model predicting the majority class always gets high accuracy but fails at the minority class.
+
+**Evaluation metrics first:** Never use accuracy for imbalanced data. Use:
+- **Precision/Recall/F1** — especially F1 for fraud/spam
+- **AUC-ROC** — threshold-agnostic ranking quality
+- **AUC-PR (Precision-Recall AUC)** — more informative than ROC for severe imbalance
+- **Matthews Correlation Coefficient (MCC)** — single score, handles imbalance well
+
+**Technique 1 — Resampling:**
+
+```python
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import RandomUnderSampler
+
+# SMOTE (Synthetic Minority Over-sampling Technique)
+# Generates synthetic minority samples along feature-space line segments
+smote = SMOTE(sampling_strategy=0.1)  # Minority:Majority = 1:10
+X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
+
+# Undersampling — randomly remove majority class samples
+rus = RandomUnderSampler(sampling_strategy=0.5)
+X_under, y_under = rus.fit_resample(X_train, y_train)
+```
+
+**Technique 2 — Class weights:**
+
+```python
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+
+# Automatically compute inverse-frequency weights
+model = LogisticRegression(class_weight='balanced')
+# Equivalent to: weight_minority = n_total / (n_classes * n_minority)
+
+# XGBoost
+model = XGBClassifier(scale_pos_weight=99)  # 99:1 imbalance
+```
+
+**Technique 3 — Threshold tuning:**
+
+```python
+# Default threshold = 0.5 is arbitrary — tune it
+from sklearn.metrics import precision_recall_curve
+
+precisions, recalls, thresholds = precision_recall_curve(y_true, y_proba)
+
+# Find threshold maximizing F1
+f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
+best_threshold = thresholds[np.argmax(f1_scores)]
+```
+
+**Technique 4 — Algorithm choice:**
+
+| Algorithm | Imbalance handling |
+|---|---|
+| Gradient boosting (XGBoost/LightGBM) | Built-in `scale_pos_weight`, good out of box |
+| Tree ensembles | Less sensitive than linear models |
+| Logistic regression | Needs class weights or resampling |
+| Neural networks | Focal loss (used in RetinaNet for object detection) |
+
+**Focal Loss** (recommended for severe imbalance in deep learning):
+```python
+# Focuses training on hard misclassified examples
+# Reduces weight of easy correct classifications
+focal_loss = -alpha * (1 - p_t)^gamma * log(p_t)
+# gamma=2 is standard; (1-p_t)^2 down-weights easy negatives
+```
+
+**Practical guidance:**
+- Start with class weights (simplest, no data modification)
+- If recall is critical (fraud, cancer): SMOTE + threshold tuning
+- If false positives are costly: undersample + high threshold
+- Production: always monitor class distribution shift — imbalance ratio can change over time
+
+---
+
 ## Data Engineering Concepts
 
 ---
@@ -1380,6 +1859,199 @@ Gold: Pre-computed user features (avg_purchase_30d, churn_probability, lifetime_
 
 ---
 
+### Q390. What is a data catalog, and how does it enable data discovery and governance at scale?
+
+As data assets grow to thousands of tables, datasets, and ML features, engineers spend more time **finding data** than using it. A data catalog solves the discovery and governance problem.
+
+**What a data catalog provides:**
+
+| Feature | Description |
+|---|---|
+| **Asset inventory** | All tables, dashboards, ML models, pipelines in one searchable index |
+| **Schema documentation** | Column names, types, descriptions, example values |
+| **Data lineage** | Where did this column's data come from? What downstream assets depend on it? |
+| **Ownership** | Who owns this table? Who to contact? |
+| **Quality metadata** | Last updated, row counts, null rates, test pass/fail status |
+| **Usage stats** | How often queried? By whom? |
+| **Tags & classification** | PII, PHI, financial data, experiment data |
+
+**Popular tools:**
+
+```
+Open source:
+- Apache Atlas (Hadoop ecosystem)
+- OpenMetadata (modern, API-first)
+- DataHub (LinkedIn, widely adopted)
+- Amundsen (Lyft, recommendation-style UI)
+
+Commercial:
+- Alation, Collibra, Google Data Catalog, AWS Glue Data Catalog
+```
+
+**Data lineage example (DataHub):**
+
+```
+Raw logs (S3)
+    ↓ (Spark ETL job)
+events_bronze (Delta Lake)
+    ↓ (dbt transformation)
+user_sessions (Snowflake)
+    ↓ (feature computation)
+session_duration_feature (Feature Store)
+    ↓
+conversion_model_v3 (ML Model)
+    ↓
+checkout_recommendation API
+```
+
+Breaking any link in this chain (schema change in `user_sessions`) shows which downstream assets will break.
+
+**Integration with ML workflows:**
+- **Experiment tracking:** Link model training runs to the specific dataset versions used
+- **Feature discovery:** "Find all features derived from user purchase data" → avoid recomputing existing features
+- **Compliance:** "Find all tables containing PII" for GDPR deletion requests → automated data subject deletion
+
+**Governance workflows:**
+```python
+# Example: automated PII detection with DataHub
+# Scanner finds columns matching PII patterns
+pii_scanner.scan_table("user_events")
+# → flags: email, phone_number, ip_address
+# → adds PII tag in catalog
+# → triggers access review workflow
+```
+
+---
+
+### Q391. How does watermarking work in stream processing, and why is it essential for windowed aggregations? *(DDIA Ch11)*
+
+**The problem:** In stream processing, events arrive **out of order** due to network delays, mobile devices going offline, or late-arriving data from distributed sources. How do you compute a "complete" window aggregation (e.g., "all clicks in the last 5 minutes") when events can still arrive late?
+
+**Event time vs. processing time:**
+- **Processing time:** When the event arrives at the stream processor
+- **Event time:** When the event actually occurred (in the source system)
+
+**Watermark:** A progress marker in the stream: "I believe all events with timestamp < T have now arrived." It declares the stream's current completeness boundary.
+
+```
+Stream events (event_time, value):
+  t=10:00:01, click
+  t=10:00:05, click
+  t=10:00:02, click  ← arrived late (network delay)
+  t=10:00:09, click
+  t=10:00:04, click  ← arrived very late
+  Watermark: 10:00:08  ← processor declares: "10:00:08 is now complete"
+
+When watermark crosses 10:00:05, the [10:00:00-10:00:05] window closes.
+```
+
+**Apache Flink watermark implementation:**
+
+```python
+# Flink DataStream API (Python)
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.window import TumblingEventTimeWindows
+from pyflink.common import WatermarkStrategy, Duration, Time
+
+env = StreamExecutionEnvironment.get_execution_environment()
+
+# Watermark strategy: allow 5-second out-of-orderness
+watermark_strategy = (
+    WatermarkStrategy
+    .for_bounded_out_of_orderness(Duration.of_seconds(5))
+    .with_timestamp_assigner(lambda event, _: event.timestamp)
+)
+
+stream = (
+    env.from_source(kafka_source, watermark_strategy, "Kafka Source")
+    .key_by(lambda e: e.user_id)
+    .window(TumblingEventTimeWindows.of(Time.minutes(1)))
+    .aggregate(ClickCountAggregate())
+)
+```
+
+**Late event handling strategies:**
+
+| Strategy | How it works |
+|---|---|
+| **Discard** | Drop events arriving after watermark. Simple, loses data. |
+| **Allowed lateness** | Accept late events up to X seconds past watermark, update results |
+| **Side output** | Route late events to a separate stream for separate handling |
+
+**Trade-off: watermark lag vs. latency:**
+- Larger watermark lag (allow more out-of-orderness) → more accurate results, higher latency
+- Smaller watermark lag → lower latency, more late events discarded
+
+**Real-world example:** Uber Flink pipelines use watermarks to compute driver earnings per trip. A driver in a tunnel (no connectivity) generates events that arrive 10-30 seconds late — watermark lag is set to accommodate this.
+
+---
+
+### Q392. Why does column-oriented storage dramatically improve analytical query performance compared to row-oriented storage? *(DDIA Ch3)*
+
+**Row-oriented storage (OLTP — PostgreSQL, MySQL):**
+Each row is stored together on disk:
+```
+Row 1: [user_id=1, name="Alice", age=30, country="US", revenue=100.00, ...]
+Row 2: [user_id=2, name="Bob", age=25, country="UK", revenue=250.00, ...]
+```
+
+**Column-oriented storage (OLAP — Parquet, ORC, Redshift, BigQuery, Snowflake):**
+Each column is stored separately:
+```
+user_id column: [1, 2, 3, 4, 5, ...]
+name column:    ["Alice", "Bob", "Charlie", ...]
+age column:     [30, 25, 45, 28, ...]
+revenue column: [100.00, 250.00, 75.00, ...]
+```
+
+**Why column storage wins for analytical queries:**
+
+```sql
+-- Analytical query: touch only 2 of 50 columns
+SELECT country, SUM(revenue)
+FROM events
+WHERE date >= '2025-01-01'
+GROUP BY country;
+```
+
+**Row storage:** Must read ALL columns of ALL rows (50 columns × 100GB = 5TB of I/O) even though only 2 are needed.
+
+**Column storage:** Read only `country` column (2GB) + `revenue` column (2GB) + `date` column (2GB) = 6GB. **~800x less I/O.**
+
+**Compression benefits:**
+
+Column storage enables much better compression because each column contains values of the same type with high repetition:
+```
+country column: ["US", "US", "US", "UK", "US", "UK", "DE", "US", ...]
+→ Run-length encoding: US×47, UK×12, DE×8, ...
+→ 10-100x compression ratio vs row storage
+```
+
+**Dictionary encoding:**
+```
+country column raw:    ["United States", "United Kingdom", "United States", ...]
+dictionary encoded:    {0: "United States", 1: "United Kingdom"}
+stored as integers:    [0, 1, 0, 0, 1, 0, ...]
+```
+
+**Vectorized execution:** Modern CPUs process data in SIMD registers (256-bit AVX2 = 8 float32s at once). Column batches are perfectly aligned for vectorized operations:
+```
+Sum revenue: load 8 revenue values into SIMD register, add → 8x throughput
+```
+
+**When to use each:**
+
+| Workload | Storage | Reason |
+|---|---|---|
+| OLTP (row CRUD) | Row-oriented | Full row needed on every transaction |
+| OLAP (aggregations, scans) | Column-oriented | Few columns, many rows |
+| ML feature training | Column-oriented (Parquet) | Read specific feature columns only |
+| Time-series | Column (InfluxDB, TimescaleDB) | Timestamp + single metric column scans |
+
+**Hybrid: PAX (Partition Attributes Across)** — stores data in fixed-size pages where within each page, data is column-oriented. Used by newer HTAP databases (TiDB, SingleStore) for both workloads.
+
+---
+
 ## Reliability & Operations
 
 ---
@@ -1558,6 +2230,208 @@ If the error budget is consistently NOT being used (actual reliability >> SLO):
 ML models add a new dimension: the error budget includes not just uptime but prediction quality. A model that's technically "up" but producing wrong predictions is spending the error budget.
 
 A model's error budget might be defined as: "Average accuracy may not drop below 0.90 for more than 2 hours per month." If a data quality issue causes accuracy to drop to 0.85 for 90 minutes — that's 90 minutes of error budget spent on model quality.
+
+---
+
+### Q393. What is the difference between availability and reliability, and why does a highly available system not automatically become reliable?
+
+These terms are often used interchangeably but describe fundamentally different properties:
+
+**Availability:** The percentage of time a system is operational and accessible.
+```
+Availability = Uptime / (Uptime + Downtime)
+
+99.9%  ("three nines") = 8.76 hours downtime/year
+99.99% ("four nines")  = 52.6 minutes downtime/year
+99.999% ("five nines") = 5.26 minutes downtime/year
+```
+
+**Reliability:** The probability that the system performs its *intended function correctly* over a given time period.
+
+**Why the distinction matters:**
+
+```
+Scenario: Search service returns 200 OK for every request
+→ Availability: 100% (always responds)
+→ Reliability: Very LOW (returns wrong/empty results due to index corruption)
+
+Scenario: Payment service processes transactions with 99.9% success rate
+→ If 0.1% of payments silently fail (money not charged, order confirmed)
+→ Availability: 100%
+→ Reliability: 99.9% (but the 0.1% failures cause severe business damage)
+```
+
+**Reliability engineering metrics:**
+
+| Metric | Definition | Use |
+|---|---|---|
+| MTTF (Mean Time To Failure) | Average time before first failure | Hardware, non-repairable systems |
+| MTTR (Mean Time To Recovery) | Average time to restore service | Incident response effectiveness |
+| MTBF (Mean Time Between Failures) | MTTF + MTTR | Repairable systems |
+| Availability | MTBF / (MTBF + MTTR) | SLA calculations |
+
+**Improving reliability vs. availability requires different strategies:**
+
+| Goal | Strategy |
+|---|---|
+| Improve availability | Redundancy (replicas), fast failover, health checks |
+| Improve reliability | Testing, chaos engineering, input validation, idempotency, circuit breakers |
+| Both | Observability — detect correctness failures, not just uptime failures |
+
+**ML system context:** A recommendation model serving predictions is "available" if the API responds. It's "reliable" if the predictions are actually accurate, timely, and not stale. Many teams discover their model availability is 99.9% but reliability (predictions within acceptable accuracy) is 95%.
+
+---
+
+### Q394. What is graceful degradation, and how do you design it into a distributed system?
+
+**Graceful degradation:** A system's ability to continue operating at reduced functionality when components fail, rather than failing completely. The user experiences a degraded but functional product.
+
+**Anti-pattern (brittle system):**
+```
+Request: "Load homepage"
+→ Calls: personalization service, recommendations, user profile, ads, inventory
+→ Personalization service times out
+→ RESULT: Entire homepage fails with 500 error
+```
+
+**Graceful degradation pattern:**
+```
+Request: "Load homepage"
+→ Calls services with fallbacks defined:
+  - personalization: timeout → show popular items (cached)
+  - recommendations: error → show generic bestsellers
+  - user profile: unavailable → show logged-out view
+  - ads: timeout → show no ads (not blank space)
+  - inventory: slow → show items without stock indicators
+→ RESULT: Homepage loads with slightly worse personalization
+```
+
+**Implementation patterns:**
+
+**1. Circuit Breaker + Fallback:**
+```python
+from circuitbreaker import circuit
+
+@circuit(failure_threshold=5, recovery_timeout=30)
+def get_personalization(user_id: str) -> list:
+    return personalization_service.get(user_id)
+
+def get_homepage_products(user_id: str) -> list:
+    try:
+        return get_personalization(user_id)
+    except (CircuitBreakerError, TimeoutError):
+        # Degrade gracefully: return cached popular items
+        return cache.get("popular_items", default=STATIC_FALLBACK)
+```
+
+**2. Feature flags for degradation:**
+```python
+# Progressively disable expensive features under load
+if feature_flags.get("ml_recommendations_enabled"):
+    products = ml_recommend(user_id)
+else:
+    products = rule_based_recommend(user_id)  # cheaper fallback
+```
+
+**3. Timeout budgets (deadline propagation):**
+```python
+# Total request budget: 500ms
+# Allocate: DB=100ms, service A=150ms, service B=150ms, buffer=100ms
+# If service A uses 200ms → automatically skip service B
+async def load_page(deadline: float):
+    remaining = deadline - time.time()
+    if remaining < 0.1:  # Less than 100ms left
+        return await get_cached_page()
+    return await full_page_load(timeout=remaining * 0.8)
+```
+
+**Degradation levels (tiers):**
+```
+Tier 1 (Normal): Full functionality, personalized
+Tier 2 (Degraded): Reduced personalization, cached content
+Tier 3 (Minimal): Static cached version, no dynamic content
+Tier 4 (Emergency): Status page only
+```
+
+**Testing graceful degradation:**
+- Chaos engineering: deliberately kill services, verify degraded mode activates
+- Load testing: verify fallbacks engage under high load
+- Game days: simulate incidents and walk through degradation runbooks
+
+---
+
+### Q395. What is a blameless post-mortem, and what makes one effective vs. ineffective?
+
+**Post-mortem** (also called incident review or after-action review): A structured analysis of an incident to understand what happened, why, and how to prevent recurrence.
+
+**Blameless culture:** The insight from Google's SRE book — when engineers fear blame for incidents, they hide information, avoid risky improvements, and stop taking ownership. Blameless post-mortems assume that engineers made reasonable decisions with the information available at the time. The system failed, not the person.
+
+**Effective post-mortem structure:**
+
+```markdown
+## Incident: [Title] — [Date]
+
+### Summary
+One paragraph: what happened, impact, duration.
+Users couldn't complete checkout for 47 minutes on 2025-03-15 due to database connection pool exhaustion.
+
+### Timeline (UTC)
+- 14:23 — Spike in checkout latency detected by SLO alert
+- 14:31 — On-call engineer paged, begins investigation
+- 14:45 — Root cause identified: connection pool misconfiguration after deploy
+- 15:10 — Rollback deployed, service recovered
+
+### Root Cause
+(Not "human error" — dig deeper)
+A config change reduced max_connections from 100 to 10 during a deploy.
+The deploy pipeline didn't validate connection pool settings against load estimates.
+
+### Contributing Factors
+- No alerting on connection pool saturation (leading indicator missed)
+- Deploy checklist didn't include database config review
+- Staging environment uses lower traffic, didn't surface the issue
+
+### Impact
+- 47 minutes of degraded checkout (checkout errors ~60% of requests)
+- ~$180K estimated lost revenue
+
+### Action Items
+| Action | Owner | Due Date |
+|--------|-------|----------|
+| Add connection pool saturation alert | Platform team | 2025-03-22 |
+| Add DB config validation to deploy pipeline | DevOps | 2025-03-29 |
+| Load-test staging before production deploys | SRE | 2025-04-05 |
+
+### What Went Well
+- Alert fired within 8 minutes of incident start
+- On-call found root cause in 14 minutes
+- Rollback procedure executed correctly
+```
+
+**Ineffective post-mortem anti-patterns:**
+
+| Anti-pattern | Why it's harmful |
+|---|---|
+| "Human error" as root cause | Stops investigation too early — the real question is why the system allowed the error |
+| Long list of action items no one owns | Without owner + deadline, items never complete |
+| No timeline | Hard to understand sequence of events and detection gaps |
+| Written but never shared | Knowledge stays siloed |
+| Focusing on "who" not "what/why" | Creates fear, reduces future reporting |
+
+**The "5 Whys" technique:**
+```
+Why did checkout fail? → DB connections exhausted
+Why were connections exhausted? → max_connections set to 10
+Why was it set to 10? → Config change in deploy
+Why didn't the deploy catch it? → No validation step
+Why is there no validation? → Never added to deploy checklist
+Root cause: Missing deploy pipeline validation for DB config
+```
+
+**ML incident post-mortems** add additional dimensions:
+- Model accuracy degradation timeline
+- Data quality issues as contributing factors
+- Retraining triggers that were or weren't activated
 
 ---
 
@@ -1824,6 +2698,248 @@ This is not a PR statement. It has direct engineering implications.
 
 ---
 
+### Q396. When should you use RAG vs. fine-tuning for an LLM application, and what are the trade-offs of each approach?
+
+Both RAG and fine-tuning customize LLM behavior, but they solve fundamentally different problems:
+
+**RAG (Retrieval-Augmented Generation):** At inference time, retrieve relevant documents and inject them into the context window. The base model is unchanged.
+
+**Fine-tuning:** Update model weights on domain-specific data. The model's parametric knowledge changes.
+
+**Decision framework:**
+
+| Criterion | RAG | Fine-tuning |
+|---|---|---|
+| Data changes frequently | ✅ Just update vector store | ❌ Requires retraining |
+| Need to cite sources | ✅ Retrieved docs are traceable | ❌ Harder to attribute |
+| Need specific tone/format | ❌ Requires prompt engineering | ✅ Learns style from examples |
+| Domain-specific reasoning patterns | ❌ Base model may struggle | ✅ Can learn reasoning style |
+| Data fits in context window | ✅ (few-shot is often enough) | Overkill |
+| Data volume: thousands of examples | Either works | Fine-tuning shines |
+| Data volume: millions of documents | ✅ RAG (can't fit in context) | ❌ Impractical |
+| Latency budget | Higher (retrieval step) | Lower (single inference) |
+| Infrastructure cost | Vector DB + embedding service | Training compute (one-time) |
+
+**RAG architecture:**
+```python
+# Simplified RAG pipeline
+def rag_query(user_question: str) -> str:
+    # 1. Embed the query
+    query_embedding = embedding_model.encode(user_question)
+    
+    # 2. Retrieve relevant chunks
+    relevant_docs = vector_db.similarity_search(
+        query_embedding, k=5, score_threshold=0.7
+    )
+    
+    # 3. Build context-augmented prompt
+    context = "\n\n".join([doc.content for doc in relevant_docs])
+    prompt = f"""Context:\n{context}\n\nQuestion: {user_question}\nAnswer:"""
+    
+    # 4. Generate answer
+    return llm.generate(prompt)
+```
+
+**Fine-tuning when RAG fails:**
+- **Factual hallucination on domain terms:** RAG gives the right document but model still hallucinates → fine-tune on domain QA pairs
+- **Consistent output format:** JSON schema adherence, specific writing style → instruction fine-tuning
+- **Reasoning style:** "Think like a doctor" — not facts but reasoning patterns → fine-tune on domain expert examples
+
+**Hybrid approach (both):** Fine-tune the model to better utilize retrieved context, then use RAG at inference. Often the best of both worlds for enterprise applications.
+
+**LLM context engineering vs fine-tuning:** Before committing to fine-tuning, exhaust prompt engineering options — well-crafted system prompts with few-shot examples often match fine-tuning performance at zero training cost.
+
+---
+
+### Q397. How do multi-agent AI systems work, and what are the key failure modes to design against?
+
+**Multi-agent systems** decompose complex tasks across multiple specialized AI agents that communicate, delegate, and coordinate:
+
+```
+Orchestrator Agent
+    ├── Research Agent (web search, document retrieval)
+    ├── Code Agent (writes and executes code)
+    ├── Critic Agent (reviews outputs, suggests improvements)
+    └── Summarizer Agent (distills final answer)
+```
+
+**Communication patterns:**
+
+```python
+# Sequential pipeline (simple, predictable)
+result = research_agent.run(query)
+code = code_agent.run(result)
+review = critic_agent.run(code)
+return summarizer_agent.run(review)
+
+# Parallel with aggregation (faster for independent subtasks)
+import asyncio
+results = await asyncio.gather(
+    research_agent.run(query),
+    data_agent.run(query),
+    news_agent.run(query)
+)
+final = synthesis_agent.run(results)
+
+# Dynamic routing (orchestrator decides next step)
+while not done:
+    next_action = orchestrator.plan(history)
+    result = agents[next_action.agent].run(next_action.input)
+    history.append(result)
+    done = orchestrator.is_complete(history)
+```
+
+**Key failure modes:**
+
+**1. Hallucination amplification:** Each agent can introduce hallucinations, and downstream agents treat them as facts. One hallucination in step 1 propagates and gets "confirmed" by later agents.
+
+**2. Infinite loops:** Without proper termination conditions, agents can delegate back and forth indefinitely.
+```python
+# Guard: max iterations
+MAX_STEPS = 20
+if step_count > MAX_STEPS:
+    return fallback_response("Max agent steps exceeded")
+```
+
+**3. Context window overflow:** Long agent chains accumulate context. Each agent's full output gets passed to the next.
+```python
+# Summarize intermediate outputs to manage context
+if len(context) > 50_000:  # tokens
+    context = summarizer.compress(context, target_tokens=10_000)
+```
+
+**4. Prompt injection via retrieved data:** A research agent fetches a webpage containing "Ignore previous instructions and..." — the malicious instruction gets injected into the orchestrator's context.
+```python
+# Sanitize retrieved content before passing to orchestrator
+def sanitize_for_agent(content: str) -> str:
+    # Remove potential instruction injections
+    patterns = ["ignore previous", "system:", "assistant:"]
+    for pattern in patterns:
+        content = content.replace(pattern, "[REMOVED]")
+    return content
+```
+
+**5. Cost explosion:** Unconstrained agent loops can make hundreds of LLM calls.
+```python
+# Budget tracking
+class BudgetedAgent:
+    def __init__(self, max_cost_usd: float = 1.0):
+        self.budget = max_cost_usd
+        
+    def run(self, prompt: str) -> str:
+        estimated_cost = estimate_cost(prompt)
+        if estimated_cost > self.budget:
+            raise BudgetExceededError()
+        self.budget -= estimated_cost
+        return llm.generate(prompt)
+```
+
+**Framework landscape:** LangGraph (stateful multi-agent), AutoGen (Microsoft), CrewAI, Semantic Kernel. Each has different trade-offs in control flow vs. agent autonomy.
+
+---
+
+### Q398. What are LLM token economics, and how do they influence architectural decisions in production systems?
+
+**Token economics:** Every LLM interaction has a direct cost in tokens (and dollars). Architecture decisions should minimize unnecessary token consumption without degrading quality.
+
+**Pricing structure (approximate, varies by model/provider):**
+```
+GPT-4o:   Input $2.50/1M tokens,  Output $10.00/1M tokens
+Claude 3.5 Sonnet: Input $3.00/1M, Output $15.00/1M
+Gemini 1.5 Pro: Input $1.25/1M, Output $5.00/1M
+Llama 3.1 70B (self-hosted): ~$0.50/1M (compute cost)
+```
+
+**Key insight: Output tokens cost 3-10x input tokens.** Architecturally, this means:
+- Minimize output length where possible
+- Cache outputs aggressively
+- Choose models by output quality per dollar, not just quality
+
+**Token optimization strategies:**
+
+**1. Prompt compression:**
+```python
+# Verbose (expensive)
+prompt = """
+You are a helpful AI assistant. Your job is to analyze the following customer 
+feedback and extract the main sentiment. Please consider all aspects of the 
+feedback carefully before providing your analysis...
+
+Customer feedback: "The product broke after 2 days."
+"""
+
+# Compressed (cheaper, often same quality)
+prompt = "Analyze sentiment: 'The product broke after 2 days.'\nSentiment:"
+# Saved ~50 tokens per request × 1M requests = $125 savings (Claude 3.5)
+```
+
+**2. Prompt caching (Anthropic/OpenAI feature):**
+```python
+# System prompt is repeated every request — cache it!
+# Anthropic: Cache prefix saves 90% on input token cost for cached portion
+
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "text", 
+                "text": LARGE_SYSTEM_CONTEXT,  # 10K tokens
+                "cache_control": {"type": "ephemeral"}  # Cache this!
+            },
+            {"type": "text", "text": user_question}  # Only ~50 tokens charged at full rate
+        ]
+    }
+]
+```
+
+**3. Context window management:**
+```python
+# Sliding window for long conversations
+def trim_context(messages: list, max_tokens: int = 8000) -> list:
+    # Always keep system message + last N turns
+    system = messages[0]
+    recent = messages[-10:]  # Keep last 10 messages
+    
+    if count_tokens(system + recent) < max_tokens:
+        return system + recent
+    
+    # Summarize middle messages
+    middle_summary = summarize(messages[1:-10])
+    return [system, {"role": "assistant", "content": middle_summary}] + recent
+```
+
+**4. Model routing (tiered dispatch):**
+```python
+# Use cheaper models for simple queries
+def route_to_model(query: str) -> str:
+    complexity = estimate_complexity(query)
+    
+    if complexity == "simple":
+        return "gpt-4o-mini"  # $0.15/1M input
+    elif complexity == "medium":
+        return "claude-3.5-haiku"  # $0.80/1M input
+    else:
+        return "claude-3.5-sonnet"  # $3.00/1M input
+```
+
+**5. Semantic caching:**
+```python
+# Cache LLM responses by semantic similarity, not exact match
+cache_key = embedding_model.encode(query)
+cached = vector_cache.search(cache_key, threshold=0.95)
+if cached:
+    return cached.response  # $0 cost
+return llm.generate(query)  # Only call LLM for novel queries
+```
+
+**Production monitoring:**
+- Track: tokens per request, cost per user, cache hit rate, cost per feature
+- Alert on: sudden cost spikes (prompt injection making responses long), cache misses above threshold
+- Dashboard: daily token spend by model, by feature, by user tier
+
+---
+
 ## Organizational & Process
 
 ---
@@ -1997,6 +3113,184 @@ For most ML applications, this is fine — a 100ms window of stale features does
 **Write-behind (write-back):** Writes go to the cache immediately (fast). The cache asynchronously writes to the database in the background. Very fast writes. Risk: if the cache fails before the background write completes, data is lost.
 
 **For ML specifically:** Feature stores often use read-through caching. The serving layer reads from the cache. Cache misses trigger feature computation from the feature store. Cache writes happen asynchronously after computation. The window of inconsistency is explicitly accepted as a design choice — if a user's features are 5 minutes stale, predictions are slightly less accurate but the system can handle 100x the request volume.
+
+---
+
+### Q399. What is Conway's Law, and how does it influence system architecture and team structure decisions?
+
+**Conway's Law** (Melvin Conway, 1968): *"Organizations which design systems are constrained to produce designs which are copies of the communication structures of those organizations."*
+
+In plain terms: the architecture of your software mirrors the communication structure of the teams that built it.
+
+**Classic example:**
+```
+If you have 4 teams → you'll get a 4-component architecture
+If sales, ops, and engineering each own the customer data
+→ you'll get 3 separate customer data systems (even if they should be one)
+
+If your frontend and backend teams don't communicate well
+→ you'll get an API that's designed for backend convenience, not frontend usability
+```
+
+**Inverse Conway Maneuver (Team Topologies):** Instead of letting org structure accidentally dictate architecture, *intentionally design your team structure to produce the architecture you want*.
+
+```
+Desired Architecture:            Team Structure:
+┌─────────────────┐              ┌───────────────────────┐
+│   Platform      │    →         │  Platform Team         │
+│   (auth, data)  │              │  (infra engineers)     │
+├─────────────────┤    →         ├───────────────────────┤
+│   User-facing   │    →         │  Product Squad A       │
+│   features      │              │  (full-stack, ML, UX)  │
+└─────────────────┘              └───────────────────────┘
+```
+
+**Team Topologies (Matthew Skelton & Manuel Pais) — the modern framework:**
+
+| Team Type | Role | Interaction mode |
+|---|---|---|
+| Stream-aligned | Owns a value stream end-to-end | Collaboration, X-as-a-service |
+| Platform | Provides self-service internal platform | X-as-a-service |
+| Enabling | Helps stream teams adopt new tech | Facilitating |
+| Complicated subsystem | Owns a complex, specialist area | X-as-a-service |
+
+**Cognitive load management:** Teams should own what fits in their "cognitive load budget." If a team owns too many services or too complex a domain, quality degrades. Architecture should match team cognitive capacity.
+
+**Microservices and Conway's Law:**
+The microservices movement often produces service-per-team boundaries. This is Conway's Law working intentionally — the communication overhead between services matches the communication overhead between teams. But if you have 50 microservices owned by 5 teams, Conway's Law predicts those will cluster into 5 groups with tighter coupling within groups.
+
+**ML team context:** When data engineers, ML scientists, and ML engineers are in separate orgs with different managers, you often see three separate systems for data preparation, training, and serving — with integration friction at every handoff. The solution is often not technical but organizational: cross-functional ML platform teams.
+
+---
+
+### Q400. What are DORA metrics, and how do you use them to measure and improve engineering team performance?
+
+**DORA (DevOps Research and Assessment)** identified four key metrics that distinguish high-performing engineering teams from low-performing ones. These are now the industry standard for measuring software delivery performance.
+
+**The four DORA metrics:**
+
+| Metric | What it measures | High performer | Low performer |
+|---|---|---|---|
+| **Deployment Frequency** | How often you deploy to production | Multiple times/day | Once per month or less |
+| **Lead Time for Changes** | Code commit → production time | Less than 1 hour | 1-6 months |
+| **Change Failure Rate** | % of deployments causing incidents | 0-15% | 46-60% |
+| **Time to Restore Service** | Incident detection → recovery | Less than 1 hour | 1 week to 1 month |
+
+**Fifth metric added in 2021:**
+- **Reliability (Operational Performance):** Meeting SLOs. Elite teams maintain SLOs and use error budgets.
+
+**Calculating DORA metrics from CI/CD data:**
+
+```python
+# Lead Time for Changes
+def lead_time(pr_merged_at: datetime, deployed_at: datetime) -> timedelta:
+    return deployed_at - pr_merged_at
+
+# Deployment Frequency
+deployments_in_period = len(production_deployments)
+frequency = deployments_in_period / days_in_period  # per day
+
+# Change Failure Rate
+failed_deployments = sum(1 for d in deployments if d.caused_incident)
+cfr = failed_deployments / len(deployments) * 100
+
+# MTTR
+def mttr(incidents: list) -> timedelta:
+    recovery_times = [i.resolved_at - i.detected_at for i in incidents]
+    return sum(recovery_times, timedelta()) / len(recovery_times)
+```
+
+**Using DORA for improvement:**
+
+```
+Low Deployment Frequency:
+→ Long-running feature branches (trunk-based development fix)
+→ Fear of deployments (improve test coverage, add staging)
+→ Manual approval gates (automate checks, reduce gates)
+
+High Lead Time:
+→ Large batch sizes (smaller PRs)
+→ Slow CI pipelines (optimize test suite, parallelize)
+→ Manual testing steps (automate)
+
+High Change Failure Rate:
+→ Insufficient testing (add integration/E2E tests)
+→ No canary deployments (implement gradual rollout)
+→ Missing observability (add structured logging, metrics)
+
+Slow MTTR:
+→ No on-call runbooks (document)
+→ Poor alerting (fix alert quality)
+→ Missing rollback automation (one-click rollback)
+```
+
+**DORA for ML systems:** Adapt metrics for ML workflows:
+- Lead time includes: data preparation + training + evaluation + deployment
+- Change failure rate: % of model deployments causing accuracy degradation
+- MTTR: time to detect model quality issues and retrain/rollback
+
+**Anti-pattern: gaming metrics.** Deploying trivial changes to inflate deployment frequency, or using narrow incident definitions to suppress change failure rate. DORA metrics reflect culture — gaming them defeats the purpose.
+
+---
+
+### Q401. How do you decide whether to build or buy ML tooling, and what are the long-term consequences of each choice?
+
+The build-vs-buy decision for ML infrastructure (feature stores, experiment tracking, model registries, serving platforms) is one of the most consequential architectural decisions an ML team makes.
+
+**When to buy (managed service / open source):**
+
+```
+Criteria favoring buy:
+✓ The problem is solved: MLflow, Weights & Biases, SageMaker handle 80% of use cases
+✓ Operational burden is high: maintaining distributed training infra is expensive
+✓ Team is small: one ML engineer shouldn't maintain a feature store
+✓ Velocity matters: buying means shipping in weeks, building in months/years
+✓ Vendor innovation: providers invest in features you'd never build yourself
+```
+
+**When to build:**
+
+```
+Criteria favoring build:
+✓ Unique requirements: your use case doesn't fit any vendor's model
+✓ Scale: vendor pricing becomes prohibitive at 10B predictions/day
+✓ Data sensitivity: can't send training data to third-party
+✓ Control: you need deep integration with proprietary internal systems
+✓ Competitive differentiation: ML infrastructure IS your product
+```
+
+**Real examples:**
+
+| Company | Decision | Reasoning |
+|---|---|---|
+| Netflix | Built Metaflow (open-sourced) | Scale + unique workflow requirements |
+| Uber | Built Michelangelo (internal) | Scale + cross-team standardization |
+| Airbnb | Built Bighead | Data sensitivity + scale |
+| Most startups | Buy (SageMaker, Vertex AI, Databricks) | Speed to market beats custom infra |
+
+**The buy trap:** Vendors create lock-in. When switching becomes painful after 2 years:
+- Data in proprietary formats
+- Team expertise in vendor-specific APIs
+- Migration cost = months of engineering
+
+**Build trap mitigation:** Use open-source middleware (MLflow, Feast) so that even if you self-host, the ecosystem is portable.
+
+**Decision matrix:**
+
+```
+Stage of company → 
+                │ Early (0-2 years) │ Growth (2-5 years) │ Mature (5+ years)
+─────────────────┼───────────────────┼────────────────────┼──────────────────
+Experiment tracking│ Buy (W&B/MLflow) │ Buy or self-host   │ Build if unique
+Feature store      │ Buy (Feast/Tecton)│ Buy or hybrid      │ Build at 10B+
+Model serving      │ Buy (SageMaker)  │ Buy or Triton      │ Build if latency-critical
+Training infra     │ Buy (cloud GPUs) │ Buy + spot/reserved│ Negotiate + custom
+```
+
+**Total cost of ownership (TCO):** Build costs are often underestimated. Include:
+- Initial engineering: 3-6 months × 2-3 engineers for a feature store
+- Ongoing maintenance: 10-20% of initial build annually
+- Opportunity cost: what would those engineers have built instead?
 
 ---
 
@@ -2452,6 +3746,263 @@ Robustness is improved by adversarial training (training on adversarial examples
 Reliability is improved by serving infrastructure engineering, circuit breakers, input validation, output validation, graceful degradation, and comprehensive monitoring.
 
 Production ML requires all three. A model that's accurate in the lab but not robust to real-world inputs and not reliably served is worthless in production.
+
+---
+
+### Q402. What are digital twins in ML systems, and when does the pattern justify its complexity?
+
+**Digital twin:** A real-time, continuously updated virtual model of a physical system, process, or entity — synchronized with sensor data and used for simulation, prediction, and optimization without impacting the real system.
+
+**Origin:** NASA developed the concept for spacecraft simulation. Now used in manufacturing (GE turbines), smart cities, healthcare (patient models), and ML experimentation.
+
+**Digital twin in ML context:**
+
+```
+Physical System          Digital Twin
+─────────────           ─────────────
+Manufacturing line  →   Simulation model (same physics, dynamics)
+User behavior       →   User model (predicted state, preferences)
+Infrastructure      →   Capacity model (load predictions, failure simulation)
+```
+
+**Use case 1 — Safe ML experimentation:**
+```python
+# Instead of A/B testing a new recommendation algorithm on real users:
+# 1. Build a digital twin of user behavior (learned from historical data)
+# 2. Simulate the new algorithm against the twin
+# 3. Only deploy to production if twin simulation shows improvement
+
+class UserBehaviorTwin:
+    def simulate_session(self, user_id: str, algorithm) -> SessionResult:
+        # Replay historical context + predict responses using behavioral model
+        user_state = self.user_model.get_state(user_id)
+        return algorithm.recommend(user_state)
+```
+
+**Use case 2 — Predictive maintenance:**
+```
+Physical sensor data → Digital twin model → Predicts failure 48h ahead
+→ Schedule maintenance proactively → Avoid unplanned downtime
+Rolls Royce uses this for jet engines (Engine Health Management)
+```
+
+**Use case 3 — Continuous training environment:**
+```
+Instead of waiting for real-world data to train RL agents:
+→ Digital twin provides a simulated environment
+→ Agents train in simulation (millions of episodes overnight)
+→ Best simulation policy transferred to production
+Used by: robotics (sim2real), autonomous vehicles (CARLA simulator), HVAC optimization
+```
+
+**When it's justified:**
+
+| Condition | Rationale |
+|---|---|
+| Testing in production is too costly/risky | Pharmaceutical, aviation, infrastructure |
+| Data collection is slow or expensive | Rare events, physical experiments |
+| Need to test far more scenarios than real-world provides | Safety testing (edge cases) |
+| Real system can't be paused for experiments | Manufacturing, live services |
+
+**When it's NOT justified:**
+- Simple A/B testing infrastructure already exists
+- User behavior models diverge too quickly from reality (high drift systems)
+- Cost of maintaining twin exceeds cost of running real experiments
+
+**Sim2Real gap:** The primary challenge — the twin model is always an approximation. Agents trained in simulation may fail in production due to unmodeled physics, noise, or distribution shift.
+
+---
+
+### Q403. What is model collapse in LLM training, and what risks does heavy synthetic data usage introduce?
+
+**Model collapse** (Shumailov et al., 2023 "The Curse of Recursion"): A degenerative process where AI models trained on AI-generated data progressively lose capability and diversity, collapsing toward low-variance, homogeneous outputs.
+
+**The collapse mechanism:**
+
+```
+Generation 1: Model M₁ trained on real human data (diverse, high quality)
+↓ M₁ generates synthetic training data
+Generation 2: Model M₂ trained on M₁'s outputs
+↓ M₂ generates synthetic training data (tail distributions are lost)
+Generation 3: M₃ trained on M₂'s outputs  
+↓ Outputs become increasingly repetitive, less nuanced
+Generation N: Model Mₙ produces near-degenerate outputs
+```
+
+**Why tail distributions are lost:**
+When a model generates samples, it samples from its probability distribution. Rare but valid outputs (tail events) have low probability and are undersampled. The next model trained on these samples sees even fewer tail events. Over generations, the model "forgets" rare but important patterns.
+
+**Concrete example — creative writing:**
+```
+G1 model: writes about complex emotions, unusual metaphors, niche topics
+G2 model (trained on G1 outputs): slightly less diverse vocabulary
+G3 model: writes in a noticeably homogeneous style
+G5 model: every story has the same structure, similar vocabulary
+```
+
+**Practical risks of synthetic data at scale:**
+
+| Risk | Description |
+|---|---|
+| Bias amplification | If synthetic data generator has biases, they compound across generations |
+| Error propagation | Factual errors in G1 outputs are "confirmed" by G2 training |
+| Cultural homogenization | Rare languages, dialects, cultural knowledge disappear |
+| Capability ceiling | Model can't exceed capability of its synthetic data generator |
+
+**Mitigation strategies:**
+
+```python
+# 1. Maintain diversity requirements in synthetic data
+synthetic_pipeline = SyntheticDataGenerator(
+    diversity_threshold=0.85,  # Reject batches with low diversity score
+    human_validation_rate=0.05  # Sample 5% for human review
+)
+
+# 2. Watermark synthetic data — track provenance
+def generate_with_provenance(prompt: str) -> dict:
+    output = model.generate(prompt)
+    return {
+        "content": output,
+        "source": "synthetic_v2",
+        "generator_model": "claude-3.5-sonnet",
+        "generation_date": datetime.utcnow().isoformat()
+    }
+
+# 3. Blend ratios — maintain human data proportion
+dataset = blend_datasets(
+    human_data=real_corpus,     # 70%
+    synthetic_data=synth_corpus, # 30%
+    blend_ratio=0.7
+)
+```
+
+**Industry response:**
+- OpenAI, Anthropic use careful quality filtering and human validation pipelines
+- Maintaining proprietary human-labeled datasets becomes a competitive moat as the internet fills with AI content
+- Common Crawl and other web datasets increasingly contain AI-generated content — provenance tracking becomes essential for training data hygiene
+
+**Detection:** Synthetic content detection models (trained to identify AI-generated text) — but these are in an arms race with generation quality improvements.
+
+---
+
+### Q404. What does AI safety engineering look like in production systems, and what are the practical implementation patterns?
+
+**AI safety engineering** in production is the set of technical practices that ensure AI systems behave safely, predictably, and within intended constraints — even under adversarial inputs, distribution shift, or unexpected usage patterns.
+
+This is distinct from alignment research (theoretical AI safety). Production safety engineering is applied, empirical, and operational.
+
+**Layer 1 — Input validation and filtering:**
+
+```python
+class InputGuardrail:
+    def __init__(self):
+        self.classifier = HarmClassifier()  # Fine-tuned safety classifier
+        self.rate_limiter = RateLimiter(max_requests=100, window=60)
+        
+    def validate(self, user_input: str, user_id: str) -> ValidationResult:
+        # Check rate limits
+        if not self.rate_limiter.allow(user_id):
+            return ValidationResult(blocked=True, reason="rate_limit")
+        
+        # Classify harmful intent
+        harm_score = self.classifier.score(user_input)
+        if harm_score > 0.8:
+            return ValidationResult(blocked=True, reason="harmful_content")
+        
+        # Detect prompt injection attempts
+        if self.detect_injection(user_input):
+            return ValidationResult(blocked=True, reason="prompt_injection")
+        
+        return ValidationResult(blocked=False)
+    
+    def detect_injection(self, text: str) -> bool:
+        injection_patterns = [
+            r"ignore (all )?(previous|prior) instructions",
+            r"you are now",
+            r"new persona",
+            r"system prompt:"
+        ]
+        return any(re.search(p, text.lower()) for p in injection_patterns)
+```
+
+**Layer 2 — Output filtering and validation:**
+
+```python
+class OutputGuardrail:
+    def __init__(self):
+        self.pii_detector = PIIDetector()
+        self.toxicity_classifier = ToxicityClassifier()
+    
+    def validate(self, output: str) -> str:
+        # Detect and redact PII
+        output = self.pii_detector.redact(output)
+        
+        # Block toxic outputs
+        if self.toxicity_classifier.score(output) > 0.7:
+            return SAFE_FALLBACK_RESPONSE
+        
+        # Detect hallucinated citations
+        for citation in extract_citations(output):
+            if not verify_citation(citation):
+                output = output.replace(citation, "[citation needed]")
+        
+        return output
+```
+
+**Layer 3 — Behavioral monitoring:**
+
+```python
+# Track model behavior drift over time
+class BehaviorMonitor:
+    def log_interaction(self, input: str, output: str, metadata: dict):
+        embedding = embed(input + output)
+        
+        # Detect unusual behavioral clusters
+        cluster = self.clusterer.predict(embedding)
+        if cluster not in self.expected_clusters:
+            alert("Unexpected behavior cluster detected", metadata)
+        
+        # Track refusal rate (too high = over-cautious, too low = safety issue)
+        if is_refusal(output):
+            self.refusal_counter.increment(metadata["category"])
+        
+        # Log for audit trail
+        self.audit_log.write({
+            "timestamp": datetime.utcnow(),
+            "user_id": metadata["user_id"],
+            "input_hash": hash(input),  # Privacy: store hash, not content
+            "harm_score": metadata.get("harm_score"),
+            "cluster": cluster
+        })
+```
+
+**Layer 4 — Kill switches and circuit breakers:**
+
+```python
+class AICircuitBreaker:
+    def __init__(self):
+        self.state = "CLOSED"  # Normal operation
+        self.failure_count = 0
+        self.threshold = 10  # Failures before opening
+    
+    def call(self, fn, *args):
+        if self.state == "OPEN":
+            return SAFE_STATIC_FALLBACK  # AI disabled
+        
+        result = fn(*args)
+        
+        if is_safety_violation(result):
+            self.failure_count += 1
+            if self.failure_count >= self.threshold:
+                self.state = "OPEN"
+                alert("AI circuit breaker opened — safety violations exceeded threshold")
+        
+        return result
+```
+
+**Red-teaming:** Regular adversarial testing — hire red teamers to find jailbreaks, boundary violations, and emergent unsafe behaviors before users do.
+
+**The hard reality:** Perfect safety is impossible. Safety engineering is risk management — reduce harm probability, detect incidents fast, recover quickly, and continuously improve based on observed failures. Treat AI safety as an operational discipline, not a one-time launch checklist.
 
 ---
 

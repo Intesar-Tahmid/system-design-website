@@ -587,6 +587,89 @@ SSR approach:
 
 ---
 
+### Q294. What is TLS and how does the HTTPS handshake work?
+
+**Answer:**
+
+**TLS (Transport Layer Security)** is the cryptographic protocol that secures HTTP traffic. When you see `https://`, TLS is encrypting the connection between your browser and the server.
+
+**The TLS 1.3 handshake (simplified):**
+```
+1. Client Hello: "I support TLS 1.3. Here's my public key share."
+2. Server Hello: "Using TLS 1.3. Here's my public key share + my certificate."
+3. Client: Verifies certificate (Is it signed by a trusted CA? Does domain match?)
+4. Both sides derive the same symmetric session key using Diffie-Hellman key exchange
+5. Encrypted communication begins
+```
+
+**Why asymmetric + symmetric?** Public-key cryptography (RSA/ECDSA) is too slow for bulk data. The handshake uses it once to establish a shared secret, then switches to fast symmetric encryption (AES) for the actual data.
+
+**Certificate chain:** The server's certificate is signed by an intermediate CA, which is signed by a root CA. Your OS/browser ships with ~150 trusted root CAs pre-installed. If the chain leads to a trusted root, the certificate is valid.
+
+**TLS 1.3 improvement over 1.2:** Reduced handshake from 2 round trips to 1 (1-RTT), removed weak cipher suites, added 0-RTT resumption for repeat connections.
+
+---
+
+### Q295. What is the difference between authentication and authorization?
+
+**Answer:**
+
+These two terms are frequently confused but address completely different questions:
+
+**Authentication:** *Who are you?* — verifying identity.
+- "This is Alice, because she provided the correct password and passed 2FA."
+- Done at login / with every request via a token
+
+**Authorization:** *What are you allowed to do?* — enforcing permissions.
+- "Alice is authenticated, but she's a read-only user — she can GET posts but not DELETE them."
+- Done after authentication, on every request
+
+**Analogy:** Authentication is showing your ID at a bar (proving who you are). Authorization is being over 21 (determining what you're allowed to do).
+
+```
+Request: DELETE /posts/42
+Step 1 — Authentication: Verify JWT signature → user_id = alice ✅
+Step 2 — Authorization: Does alice have permission to delete post 42?
+  → Check: is alice the post author OR has role=admin?
+  → alice is neither → 403 Forbidden ❌
+```
+
+**Common pattern:**
+- Authentication: JWT, sessions, OAuth tokens
+- Authorization: RBAC (role-based access control), ABAC (attribute-based), ACLs
+
+**Common mistake:** Treating these as a single step. You can be authenticated but not authorized. "401 Unauthorized" (confusingly named) means unauthenticated. "403 Forbidden" means authenticated but not authorized.
+
+---
+
+### Q296. What is HTTP/2 multiplexing and how does it solve head-of-line blocking?
+
+**Answer:**
+
+**HTTP/1.1 limitation:** Each request requires its own TCP connection (or waits in queue). Browsers open 6 parallel connections per domain — a hack around the queue problem. Even so, a slow response blocks other responses on that connection.
+
+**HTTP/2 multiplexing:** Multiple requests and responses are interleaved on a *single* TCP connection using streams. Each request gets a stream ID; frames from different streams are mixed together and reassembled on the other end.
+
+```
+HTTP/1.1 (3 connections, sequential on each):
+Conn 1: [req1]→[resp1 slow...]   [req4]→[resp4]
+Conn 2: [req2]→[resp2]           [req5]→[resp5]
+Conn 3: [req3]→[resp3]           [req6]→[resp6]
+
+HTTP/2 (1 connection, multiplexed):
+[stream1 req][stream2 req][stream3 req]
+[stream2 resp][stream1 resp][stream3 resp]  ← no waiting
+```
+
+**Other HTTP/2 improvements:**
+- **Header compression (HPACK):** Headers are often repetitive (cookies, user-agent). HPACK compresses them, reducing overhead.
+- **Server push:** Server can proactively send resources (CSS, JS) before the browser asks for them.
+- **Binary protocol:** HTTP/1.1 is text; HTTP/2 is binary — faster to parse.
+
+**Remaining issue:** HTTP/2 still has TCP head-of-line blocking — if a TCP packet is lost, all streams stall waiting for retransmission. This is what HTTP/3 + QUIC solves by moving to UDP.
+
+---
+
 ### Q194. What is the critical rendering path and how does it affect page performance?
 
 **Answer:**
@@ -960,6 +1043,124 @@ server {
 
 ---
 
+### Q297. What is a service worker and how does it enable Progressive Web Apps?
+
+**Answer:**
+
+A **service worker** is a JavaScript script that runs in the background, separate from the web page, acting as a programmable proxy between the web app and the network. It enables offline functionality, background sync, and push notifications.
+
+**How it works:**
+```
+Normal request: Page → Network → Response
+With service worker: Page → Service Worker → (Network or Cache) → Response
+```
+
+The service worker intercepts every network request and can decide: serve from cache, go to network, or combine both.
+
+**Enabling offline capability:**
+```javascript
+// sw.js — install event: cache all shell assets
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open('v1').then(cache => cache.addAll([
+      '/', '/app.js', '/style.css', '/offline.html'
+    ]))
+  );
+});
+
+// Fetch event: serve from cache, fall back to network
+self.addEventListener('fetch', event => {
+  event.respondWith(
+    caches.match(event.request) || fetch(event.request)
+  );
+});
+```
+
+**PWA (Progressive Web App):** Using service workers + a Web App Manifest (`manifest.json`), a web app can be installed on a home screen, work offline, and send push notifications — behaving like a native app.
+
+**Limitations:** Service workers only work over HTTPS (security requirement). They can't access the DOM directly. Debugging requires the Application tab in DevTools.
+
+---
+
+### Q298. What is lazy loading and how does it improve page performance?
+
+**Answer:**
+
+**Lazy loading** defers loading of non-critical resources until they're actually needed — typically when the user scrolls near them. Instead of downloading everything upfront, only what's visible in the viewport loads initially.
+
+**Native HTML lazy loading:**
+```html
+<!-- Images below the fold load only when scrolled near -->
+<img src="product.jpg" loading="lazy" alt="Product">
+
+<!-- iframes too -->
+<iframe src="video-embed.html" loading="lazy"></iframe>
+```
+
+**JavaScript module lazy loading:**
+```javascript
+// Don't load the chart library until the user opens the charts tab
+const loadCharts = async () => {
+  const { Chart } = await import('./chart-lib.js');
+  new Chart(ctx, data);
+};
+document.getElementById('charts-tab').onclick = loadCharts;
+```
+
+**Route-based code splitting (React):**
+```jsx
+const Dashboard = lazy(() => import('./Dashboard'));
+// Dashboard.js is only downloaded when the user navigates to /dashboard
+```
+
+**Performance impact:**
+- Reduces initial page load time (LCP improves)
+- Reduces bandwidth — users never download resources they don't see
+- Critical for pages with many images or large JavaScript bundles
+
+**Trade-off:** Images might not load instantly when a user fast-scrolls. Use `loading="lazy"` only below the fold; always eagerly load hero images (LCP element).
+
+---
+
+### Q299. What is the JavaScript event loop and how does it handle async operations?
+
+**Answer:**
+
+JavaScript is single-threaded — it can only execute one thing at a time. The **event loop** is the mechanism that enables non-blocking I/O despite this single thread constraint.
+
+**Components:**
+- **Call stack:** Where currently executing code runs
+- **Web APIs:** Browser-provided APIs (setTimeout, fetch, DOM events) that run outside the main thread
+- **Callback queue (task queue):** Where completed callbacks wait to be processed
+- **Microtask queue:** Higher-priority queue for Promise callbacks
+
+**Execution order:**
+```
+1. Execute synchronous code (call stack)
+2. Process ALL microtasks (Promise .then callbacks) — empties completely
+3. Process ONE macrotask (setTimeout, setInterval, I/O callbacks)
+4. Repeat
+```
+
+**Example:**
+```javascript
+console.log('1');                          // sync → immediate
+
+setTimeout(() => console.log('2'), 0);    // macrotask → last
+
+Promise.resolve().then(() => console.log('3'));  // microtask → before setTimeout
+
+console.log('4');                          // sync → immediate
+
+// Output: 1, 4, 3, 2
+```
+
+**Why this matters for performance:** Long-running sync code (sorting a huge array) blocks the event loop — the UI freezes. Solution: Web Workers for CPU work, or break work into chunks with `setTimeout(chunk, 0)`.
+
+**async/await** is syntactic sugar over Promises — `await` yields control back to the event loop, allowing other tasks to run while waiting for I/O.
+
+---
+
 ### Q199. What is the OSI model and why is it useful?
 
 **Answer:**
@@ -1321,6 +1522,81 @@ spec:
 
 ---
 
+### Q300. What is SSL/TLS termination and where does it typically happen?
+
+**Answer:**
+
+**TLS termination** is the process of decrypting TLS-encrypted traffic. Once terminated, the traffic travels in plaintext internally. The component that does this is called the "TLS terminator."
+
+**Where it happens:**
+
+**At the load balancer (most common):** The load balancer holds the TLS certificate and decrypts traffic. Internal traffic (LB → backend servers) is plaintext HTTP.
+```
+Client → [HTTPS] → Load Balancer (TLS termination) → [HTTP] → App Servers
+```
+
+**At the CDN edge:** CDN providers terminate TLS at edge nodes worldwide (closer to users = faster handshake). Traffic from CDN to origin can be HTTPS (re-encrypted) or HTTP (depending on security requirements).
+
+**At the application server (TLS passthrough):** LB passes encrypted bytes directly to the app server, which decrypts itself. More secure (plaintext never on network), but the LB can't inspect or route based on HTTP headers.
+
+**Why terminate at the LB?**
+- Centralized certificate management (renew in one place)
+- Offloads CPU-intensive crypto from app servers
+- LB can see and route based on HTTP content (headers, URL paths)
+
+**mTLS (mutual TLS):** Both sides authenticate — not just the server presenting a certificate, but the client too. Required in zero-trust architectures for service-to-service calls.
+
+---
+
+### Q301. What is a network packet and how does IP fragmentation work?
+
+**Answer:**
+
+A **network packet** is the fundamental unit of data transmission on the internet. Data is broken into packets, each transmitted independently, and reassembled at the destination.
+
+**Packet structure (simplified):**
+```
+[IP Header: source IP, dest IP, TTL, protocol] [TCP/UDP Header: ports, seq#] [Data payload]
+```
+
+**MTU (Maximum Transmission Unit):** The maximum packet size a network link can carry. Ethernet's MTU is typically 1500 bytes. Internet paths may have smaller MTUs.
+
+**IP fragmentation:** When a packet exceeds the MTU of a link, the router fragments it into smaller pieces. Each fragment has the same IP headers but carries a slice of the original payload. The destination host reassembles them.
+
+**Why fragmentation is bad:**
+- All fragments must arrive for reassembly — if one is lost, the entire original packet must be retransmitted
+- Reassembly consumes CPU and memory at the destination
+- Firewalls often drop fragments (security risk)
+
+**Modern solution — Path MTU Discovery (PMTUD):** Sender probes the path to find the smallest MTU, then sizes packets to fit. TCP uses this automatically. The sender sets the "Don't Fragment" flag — if a router would need to fragment, it drops the packet and sends an ICMP "needs fragmentation" message back.
+
+**Practical implication:** If users report connection issues with large uploads, MTU/fragmentation is often the culprit, especially over VPNs (VPN adds headers, reducing effective MTU).
+
+---
+
+### Q302. What is Anycast and how does it differ from Unicast?
+
+**Answer:**
+
+**Unicast:** One source → one specific destination. Most internet traffic. A packet sent to `1.2.3.4` goes to exactly that machine.
+
+**Anycast:** One source → the *nearest* of many machines sharing the same IP address. The network routing infrastructure (BGP) automatically routes packets to the topologically closest node announcing that IP.
+
+```
+Unicast:  Client in Tokyo → 1.2.3.4 → always routes to server in Virginia
+Anycast:  Client in Tokyo → 1.2.3.4 → routes to nearest node (Tokyo datacenter)
+          Client in London → 1.2.3.4 → routes to nearest node (London datacenter)
+```
+
+**Why it's powerful:**
+- **CDNs use Anycast:** Cloudflare announces the same IP ranges from 300+ PoPs globally. Your request automatically goes to the nearest one.
+- **DDoS mitigation:** A volumetric attack is spread across all anycast nodes — no single node is overwhelmed.
+- **DNS root servers** use Anycast — that's how 13 root server IP addresses serve the entire global internet.
+
+**Limitation:** Because packets from the same TCP connection might route to different servers if routes change, Anycast is primarily used for stateless protocols (UDP-based: DNS, NTP) or stateless HTTP requests. TCP connections generally stay consistent once established.
+
+---
+
 ### Q204. What is serverless computing and how does it differ from traditional servers?
 
 **Answer:**
@@ -1670,6 +1946,104 @@ All reads  → 2 Replicas (handle 90% of traffic)
 
 ---
 
+### Q303. What are Kubernetes liveness, readiness, and startup probes?
+
+**Answer:**
+
+Kubernetes uses **probes** to check the health of containers and decide whether to send traffic to them or restart them.
+
+**Liveness probe:** "Is this container still alive?" If it fails, Kubernetes kills and restarts the container.
+- Use for: detecting deadlocks or infinite loops where the process is running but unresponsive
+
+**Readiness probe:** "Is this container ready to receive traffic?" If it fails, Kubernetes removes the pod from the load balancer's endpoints but doesn't restart it.
+- Use for: containers that need warmup time (loading an ML model, establishing DB connections), or containers temporarily overwhelmed by load
+
+**Startup probe:** "Has this container finished starting up?" While this probe is failing, liveness and readiness probes are disabled. Once it succeeds once, Kubernetes switches to the other probes.
+- Use for: slow-starting apps (Java apps, large model loading) that would be killed by a liveness probe before they finish initializing
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  periodSeconds: 5
+
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  failureThreshold: 30    # 30 × 10s = 5 min allowed for startup
+  periodSeconds: 10
+```
+
+**Best practice:** Always implement all three. Without readiness probes, Kubernetes sends traffic to pods that aren't ready, causing request failures during deployments.
+
+---
+
+### Q304. What is a container registry and how does image management work in production?
+
+**Answer:**
+
+A **container registry** is a storage and distribution system for Docker images. Think of it as GitHub, but for Docker images. You push images after building and pull them during deployment.
+
+**Public registries:** Docker Hub (default), GitHub Container Registry (ghcr.io), Quay.io.
+
+**Private registries:** AWS ECR, GCP Artifact Registry, Azure ACR — for images with proprietary code or configurations.
+
+**Image tagging strategy:**
+```bash
+# Build and push
+docker build -t myapp:latest -t myapp:v2.3.1 -t myapp:git-a1b2c3d .
+docker push myapp:v2.3.1
+
+# In production: NEVER use :latest — it's mutable and breaks reproducibility
+# Use: image: myapp:v2.3.1  (immutable, pinned)
+# Or:  image: myapp:git-a1b2c3d  (pinned to commit)
+```
+
+**Image layers and caching:** Docker images are layered. If only your app code changed (last layer), Docker reuses all previous layers (OS, dependencies) from cache — fast builds.
+
+**Production concerns:**
+- **Image scanning:** Scan for CVEs (Trivy, Snyk, ECR built-in) before deploying
+- **Image size:** Smaller images = faster pull times. Use multi-stage builds, Alpine base images
+- **Registry availability:** If the registry is down, you can't deploy or scale. Use a pull-through cache or pre-pull images to nodes.
+
+---
+
+### Q305. What is the difference between a daemon and a foreground process in servers?
+
+**Answer:**
+
+**Foreground process:** Runs attached to a terminal. When you close the terminal, the process dies. Input/output is tied to the terminal session.
+
+**Daemon (background process):** Runs independently of any terminal session — survives logout. Starts at boot, runs continuously, manages itself. Linux system services (nginx, postgres, sshd) are all daemons.
+
+**Traditional daemonization:** Process forks itself, parent exits (terminal thinks it's done), child detaches from the controlling terminal and continues running.
+
+**Why containers changed this:** Docker and Kubernetes expect processes to run in the **foreground** — the container lifecycle is tied to the main process's lifespan. When the main process exits, the container exits.
+
+```dockerfile
+# Wrong for containers: nginx daemonizes itself (forks to background → container exits)
+CMD ["nginx"]
+
+# Correct for containers: run nginx in foreground
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+**Process supervisors:** In VMs/bare metal, tools like `systemd`, `supervisor`, or `pm2` manage daemon processes — auto-restart on crash, manage logs, handle startup ordering.
+
+**Signal handling:** Daemons must handle SIGTERM for graceful shutdown (see Q208). Containers send SIGTERM before SIGKILL — your main process must handle it.
+
+---
+
 ### Q209. What is a database transaction and how do COMMIT and ROLLBACK work?
 
 **Answer:**
@@ -1952,6 +2326,106 @@ const top10 = await client.zrevrange("game:scores", 0, 9, "WITHSCORES");
 
 ---
 
+### Q306. What is database normalization and what are the normal forms?
+
+**Answer:**
+
+**Normalization** is the process of organizing database tables to reduce data redundancy and improve data integrity. Each "normal form" (NF) is a set of rules that progressively eliminate specific types of redundancy.
+
+**1NF (First Normal Form):** Every column contains atomic values (no arrays/lists in a cell). Each row is unique.
+```
+Violation: orders(id, items) where items = "Laptop, Mouse, Keyboard"
+Fix: separate orders and order_items tables
+```
+
+**2NF:** Everything in 1NF + no partial dependencies (every non-key column depends on the *full* primary key, not just part of it). Only relevant for composite keys.
+
+**3NF:** Everything in 2NF + no transitive dependencies (non-key columns should depend only on the primary key, not on other non-key columns).
+```
+Violation: employees(id, dept_id, dept_name)
+dept_name depends on dept_id, not on employee id
+Fix: separate departments table; employees just stores dept_id
+```
+
+**BCNF (Boyce-Codd NF):** Stricter version of 3NF. Every determinant must be a candidate key.
+
+**When to denormalize:** For read-heavy analytics workloads, joins are expensive. Deliberately denormalize by duplicating data (storing `dept_name` in employees table) to avoid joins. This is intentional and a performance trade-off, not a schema mistake. DDIA calls this "document-oriented" thinking.
+
+---
+
+### Q307. What is the difference between optimistic and pessimistic locking?
+
+**Answer:**
+
+Both prevent concurrent transactions from corrupting data, but they differ fundamentally in *when* they check for conflicts. (DDIA, Ch. 7)
+
+**Pessimistic locking:** "Assume the worst — lock data before reading it so nobody else can modify it while I'm working."
+
+```sql
+BEGIN;
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;  -- acquires row lock
+-- other transactions trying to UPDATE this row now BLOCK
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+COMMIT;  -- lock released
+```
+
+- ✅ Prevents conflicts absolutely
+- ❌ Reduces concurrency — transactions queue up waiting for locks
+- ❌ Risk of deadlocks if multiple locks acquired in different order
+
+**Optimistic locking:** "Assume no conflict — read freely, then verify nothing changed before writing."
+
+```sql
+-- Read with version
+SELECT id, balance, version FROM accounts WHERE id = 1;
+-- Got: balance=1000, version=5
+
+-- Later, update only if version hasn't changed
+UPDATE accounts SET balance = 900, version = 6
+WHERE id = 1 AND version = 5;
+-- If 0 rows affected: conflict! Another transaction modified it. Retry.
+```
+
+- ✅ High concurrency (no blocking reads)
+- ❌ Requires retry logic on conflict
+- ❌ High contention scenarios → many retries → worse than pessimistic
+
+**Rule of thumb:** Low contention (rare conflicts) → optimistic. High contention → pessimistic to avoid retry storms. Optimistic locking is common in web apps where reads vastly outnumber writes.
+
+---
+
+### Q308. What is a full-text search index and how does it differ from a regular database index?
+
+**Answer:**
+
+A **regular database index** (B-tree) enables exact matches and range queries: `WHERE email = 'alice@example.com'` or `WHERE price BETWEEN 10 AND 50`. It's a sorted structure optimized for lookup by value.
+
+A **full-text search index** is designed for natural language queries: "Find all posts containing the word 'distributed' near 'systems'." It supports:
+- Stemming: "running" matches "run", "runs"
+- Tokenization: break text into individual words
+- Relevance ranking: results ordered by how well they match
+- Fuzzy matching: typo tolerance
+
+**How it works:**
+```
+Document: "Distributed systems require careful design"
+→ Tokenize: ["distributed", "systems", "require", "careful", "design"]
+→ Inverted index: {
+    "distributed": [doc_1, doc_3, doc_7],
+    "systems":     [doc_1, doc_2, doc_5],
+    ...
+  }
+Query: "distributed systems" → find docs in both lists → rank by TF-IDF
+```
+
+**In PostgreSQL:** `tsvector` + `tsquery` + GIN index provides full-text search. Fast for simple use cases.
+
+**Elasticsearch/OpenSearch:** Purpose-built for full-text search — more features (fuzzy, autocomplete, vector search), better scaling, but a separate system to maintain.
+
+**Use case:** Product search, documentation search, log search. Don't use `LIKE '%keyword%'` in SQL — it's a full table scan and can't use indexes.
+
+---
+
 ### Q214. What are write-through, write-back, and write-around caching strategies?
 
 **Answer:**
@@ -2212,6 +2686,108 @@ async function checkRateLimit(userId, maxTokens = 10, refillRate = 1) {
 // X-RateLimit-Reset: 1735689600
 // HTTP 429 Too Many Requests when limit is exceeded
 ```
+
+---
+
+### Q309. What are the common cache eviction policies and when do you use each?
+
+**Answer:**
+
+When a cache is full, the eviction policy determines which entry gets removed to make room for new data.
+
+**LRU (Least Recently Used):** Evict the item that was accessed longest ago. Assumes recently-used items are more likely to be needed again.
+- ✅ Good approximation of "popular" data
+- ✅ Handles temporal locality well (hot data stays in cache)
+- Used by: Redis (with `allkeys-lru`), most web caches
+
+**LFU (Least Frequently Used):** Evict the item that has been accessed the fewest times.
+- ✅ Better for stable popularity (items that are always popular stay)
+- ❌ Slow to adapt — a viral item that was unpopular yesterday gets evicted despite current demand
+- Used for: CDN caches where content popularity is stable
+
+**FIFO (First In, First Out):** Evict the oldest-added item, regardless of how often it's been accessed.
+- Simple but rarely optimal — recently-added popular items can be evicted
+
+**TTL-based (Time To Live):** Items expire after a fixed duration. Not strictly an eviction policy but combined with others.
+
+**ARC (Adaptive Replacement Cache):** Automatically balances between LRU and LFU by tracking both recently-used and frequently-used items. Used in ZFS.
+
+**Redis eviction policies:**
+```
+allkeys-lru    → best for general caching
+volatile-lru   → only evict keys with TTL set
+allkeys-lfu    → better when access frequency matters
+noeviction     → reject writes when full (for mission-critical data)
+```
+
+---
+
+### Q310. What is cache warming and why is it important after a deployment?
+
+**Answer:**
+
+**Cache warming** (or cache priming) is the process of proactively populating a cache before it receives live traffic — so requests don't all hit a cold cache simultaneously.
+
+**The cold start problem:**
+```
+Before warming:
+User request → cache miss → DB query (200ms) × 10,000 concurrent users
+→ Database overwhelmed → cascading slowdowns/outage
+
+With warming:
+Deployment → warm script runs → populates cache with top 10K products
+User requests → cache hits → 2ms responses
+Database load stays manageable
+```
+
+**Warming strategies:**
+
+**Proactive/scripted:** Run a script after deployment that pre-fetches common queries:
+```python
+top_products = db.query("SELECT id FROM products ORDER BY views DESC LIMIT 10000")
+for product_id in top_products:
+    cache.set(f"product:{product_id}", db.get_product(product_id))
+```
+
+**Gradual traffic rollout:** Direct a small % of traffic to new instances before full switch. Cache fills naturally from live traffic.
+
+**Replay-based:** Replay previous request logs against the new cache instance.
+
+**Especially critical for:** ML model serving (loading model weights into GPU memory), search indexes (query result caches), homepage feeds (expensive to compute from cold).
+
+---
+
+### Q311. What is cache coherence in a distributed caching system?
+
+**Answer:**
+
+**Cache coherence** is the problem of keeping multiple cache copies of the same data consistent with each other and with the source of truth (the database).
+
+**The problem:**
+```
+Redis Node 1: product_123 = { price: $50 }
+Redis Node 2: product_123 = { price: $50 }
+
+Admin updates product price to $60 in the database.
+
+Who updates the cache? When? Which nodes?
+→ Stale reads until caches are invalidated
+```
+
+**Approaches:**
+
+**Invalidation on write:** When data is written to the DB, invalidate (delete) the cache key. Next read will miss and repopulate with fresh data.
+- Simple, guarantees eventual freshness
+- Problem: brief window of stale data; thundering herd on popular keys
+
+**Write-through propagation:** When updating, write to all cache nodes simultaneously with the DB update.
+- Complex coordination, risk of partial failures
+
+**Short TTL:** Accept stale data up to N seconds. Simple, but data can be stale for the full TTL window.
+
+**Versioned keys:** Never update a key; create a new key with a new version. Old readers use old keys until they expire. New readers use new keys. No invalidation needed.
+
+**Practical reality:** Most systems use invalidation-on-write + short TTL as a safety net. Perfect consistency across a distributed cache is expensive — design your application to tolerate brief staleness where possible.
 
 ---
 
@@ -2511,6 +3087,124 @@ payment-service.default.svc.cluster.local → always routes to healthy pods
 
 ---
 
+### Q312. What is connection draining in load balancers?
+
+**Answer:**
+
+**Connection draining** (also called "deregistration delay") is the process of gracefully removing a backend server from a load balancer's rotation by allowing it to finish handling its current in-flight requests before the server is taken offline.
+
+**Why it matters:**
+```
+Without connection draining:
+1. New deployment starts → old pod receives SIGTERM
+2. LB still routes new requests to dying pod
+3. In-flight requests: suddenly get 502/connection reset
+4. Users see errors
+
+With connection draining:
+1. New deployment starts → pod marked "draining" in LB
+2. LB stops sending NEW requests to that pod
+3. Pod finishes all in-flight requests (up to draining timeout, e.g. 30s)
+4. Pod shuts down cleanly
+5. Zero dropped requests
+```
+
+**AWS configuration:**
+```
+Elastic Load Balancer: Deregistration delay = 30 seconds (default)
+  → When a target deregisters, ELB waits 30s for in-flight requests to complete
+  → After 30s, any remaining connections are forcefully closed
+```
+
+**Kubernetes configuration:**
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60  # total time before SIGKILL
+  
+# Lifecycle hook delays SIGTERM until LB propagates deregistration:
+lifecycle:
+  preStop:
+    exec:
+      command: ["/bin/sleep", "15"]  # wait for LB to stop routing traffic
+```
+
+**Best practice:** Set connection draining timeout to slightly longer than your p99 request latency. For most web apps, 30s is sufficient. For long-running jobs (uploads, streaming), set it longer.
+
+---
+
+### Q313. What is the N-tier architecture pattern?
+
+**Answer:**
+
+**N-tier architecture** separates an application into distinct layers (tiers), each with a specific responsibility and communicating only with adjacent tiers. The most common is the 3-tier model.
+
+**3-Tier Architecture:**
+```
+Tier 1 — Presentation (Frontend): Browser, mobile app, CLI
+               ↓ HTTP requests
+Tier 2 — Application (Business Logic): API servers, microservices
+               ↓ SQL/API calls
+Tier 3 — Data (Storage): Databases, caches, file storage
+```
+
+**Benefits of separation:**
+- **Independent scaling:** Scale only the application tier during traffic spikes; keep one database
+- **Security:** Database in a private subnet, never directly accessible from the internet
+- **Maintainability:** Change the frontend without touching backend logic
+- **Testability:** Test business logic independently from UI and storage
+
+**2-tier (client-server):** Client calls database directly. Simple (desktop apps), but poor scalability and security. 
+
+**4-tier+:** Adds layers like caching tier, message queue tier, or CDN tier. Large systems naturally evolve to many tiers.
+
+**Architectural decision:** N-tier doesn't mandate microservices — you can have a single monolithic application server (Tier 2) talking to a database (Tier 3). That's a perfectly valid 3-tier architecture. Microservices is an evolution of Tier 2 itself, not a different tier model.
+
+---
+
+### Q314. What is health checking in load balancers and how does it work?
+
+**Answer:**
+
+**Health checks** are periodic probes the load balancer sends to each backend server to verify it can handle requests. Unhealthy servers are automatically removed from rotation until they recover.
+
+**Types of health checks:**
+
+**TCP check:** Simply attempts to open a TCP connection. Tests if the port is open but not if the application is actually working.
+
+**HTTP check:** Makes an HTTP GET request and checks the response code and optionally the body.
+```
+GET /health HTTP/1.1
+Host: backend-server-1
+
+Response: 200 OK
+{"status": "healthy", "db_connected": true, "cache_connected": true}
+```
+
+**Custom health endpoint best practices:**
+```python
+@app.get("/health")
+def health_check():
+    checks = {
+        "database": check_db_connection(),
+        "cache": check_redis_connection(),
+        "disk_space": check_disk_space_ok()
+    }
+    all_ok = all(checks.values())
+    return JSONResponse(
+        status_code=200 if all_ok else 503,
+        content={"status": "healthy" if all_ok else "degraded", "checks": checks}
+    )
+```
+
+**Configuration parameters:**
+- **Interval:** How often to check (default: 30s). Shorter = faster detection, more traffic
+- **Threshold:** How many consecutive failures before marking unhealthy (default: 2-3)
+- **Timeout:** How long to wait for a response (default: 5s)
+
+**Liveness vs. readiness:** For Kubernetes, readiness probes control load balancer routing (same concept). Liveness probes trigger restarts.
+
+---
+
 ### Q224. What is the bulkhead pattern in microservices?
 
 **Answer:**
@@ -2753,6 +3447,132 @@ Key difference:
 Queue: Each message processed by ONE consumer
 Stream: Each message can be processed by MANY consumers
 ```
+
+---
+
+### Q315. What is event-driven architecture and how does it differ from request-driven?
+
+**Answer:**
+
+**Request-driven (synchronous):** Service A calls Service B and waits for a response. A is coupled to B — if B is slow or down, A is also slow or blocked.
+
+```
+User clicks "Place Order"
+  → Order Service → (sync call) → Inventory Service → (sync call) → Payment Service
+  → Waits for all three to respond before returning to user
+  → If Payment Service is slow, user waits
+```
+
+**Event-driven (asynchronous):** Service A emits an event and continues immediately. Interested services subscribe and react independently.
+
+```
+User clicks "Place Order"
+  → Order Service publishes "order.placed" event → returns 202 Accepted immediately
+  
+  (Independently, in parallel):
+  Inventory Service: consumes "order.placed" → reserves stock
+  Payment Service:   consumes "order.placed" → charges card, publishes "payment.completed"
+  Email Service:     consumes "order.placed" → sends confirmation email
+```
+
+**Advantages of event-driven:**
+- **Loose coupling:** Services don't know about each other — they only know about events
+- **Resilience:** If Email Service is down, orders still process; emails retry later
+- **Scalability:** Each service scales independently based on its queue depth
+- **Extensibility:** Add a new service (analytics, loyalty points) by subscribing to existing events — no changes to existing services
+
+**Challenges:**
+- Eventual consistency: order processing takes seconds, not milliseconds
+- Debugging complexity: tracing an event across 5 services requires distributed tracing
+- Ordering guarantees: if "order.updated" arrives before "order.placed", consumers must handle this
+- No immediate response: user gets 202, must poll or use WebSocket for completion
+
+**DDIA insight:** Event logs (Kafka) are immutable append-only streams — you can derive any view of current state by replaying the log.
+
+---
+
+### Q316. What is the API composition pattern?
+
+**Answer:**
+
+The **API composition pattern** addresses a common microservices problem: a client needs data from multiple services for a single screen, but making 5 separate API calls is inefficient and complex.
+
+**Problem:**
+```
+Client needs: user profile + order history + recommendations + notifications
+→ 4 separate API calls → 4 round trips → slow mobile experience
+→ Client must understand the internal service topology
+```
+
+**API composition:** A dedicated service (or the API Gateway) orchestrates calls to multiple downstream services and merges the results into a single response.
+
+```
+Client → API Gateway
+           ├── GET /users/42       → User Service
+           ├── GET /orders?user=42 → Order Service       (parallel)
+           ├── GET /recs?user=42   → Recommendation Service
+           └── GET /notifs?user=42 → Notification Service
+         → Merge results → Single JSON response to client
+```
+
+**Implementation:**
+
+```python
+async def get_user_dashboard(user_id: int):
+    # Execute all calls in parallel
+    user, orders, recs, notifs = await asyncio.gather(
+        user_service.get_user(user_id),
+        order_service.get_orders(user_id),
+        recommendation_service.get_recs(user_id),
+        notification_service.get_unread(user_id)
+    )
+    return {"user": user, "orders": orders, 
+            "recommendations": recs, "notifications": notifs}
+```
+
+**Trade-offs:**
+- ✅ Simple client code, one API call
+- ✅ Parallel calls reduce latency
+- ❌ Composer must handle partial failures (one service is down)
+- ❌ Adds a layer to maintain
+
+**Relationship to GraphQL:** GraphQL is a formalized API composition layer — clients specify exactly what fields they need, the server resolves each field from different sources.
+
+---
+
+### Q317. What is a distributed transaction and when should you avoid it?
+
+**Answer:**
+
+A **distributed transaction** ensures atomicity across multiple services or databases — either all operations succeed or all roll back. In a microservices system, an "order" might need to atomically debit an account, reserve inventory, and create an order record — across three different databases.
+
+**The problem:** Database ACID transactions work within a single database. Across multiple databases, you lose native transaction support.
+
+**Two-phase commit (2PC):** A coordinator asks all participants "can you commit?", then either commits or aborts all. Theoretically correct but:
+- Blocking: coordinator failure leaves participants stuck with locks
+- Reduces availability (CAP theorem: distributed consensus is slow)
+- Not supported by all databases/message queues
+
+**Why you should usually avoid distributed transactions:**
+
+1. **High complexity and latency** — 2PC requires multiple round trips and locks across systems
+2. **Brittle** — a slow participant affects everyone
+3. **Often unnecessary** — most "distributed transaction" needs can be solved with eventual consistency
+
+**Better alternatives:**
+
+**Saga pattern:** Break into local transactions with compensating transactions for rollback.
+```
+Order Saga:
+1. Create order (Order DB) → success → emit "order.created"
+2. Reserve inventory (Inventory DB) → success → emit "inventory.reserved"  
+3. Charge payment (Payment DB) → FAIL → emit "payment.failed"
+→ Compensating: cancel inventory reservation, cancel order
+```
+
+**Outbox pattern:** Combine a local DB write + event publishing in one local transaction (see Q233).
+
+**Architectural principle (DDIA):** Design systems so that a single user action maps to a single local transaction. When you need cross-service coordination, use events and eventual consistency — accept that the system won't be in a consistent state at every millisecond.
 
 ---
 
@@ -3100,6 +3920,143 @@ function escapeHtml(str) {
 // Content Security Policy header to prevent inline scripts:
 // Content-Security-Policy: default-src 'self'; script-src 'self'
 ```
+
+---
+
+### Q318. What is a consumer group in Kafka and how does it enable parallel processing?
+
+**Answer:**
+
+A **consumer group** in Kafka is a set of consumers that cooperate to consume a topic. Kafka distributes partitions among consumers in a group — each partition is assigned to exactly one consumer at a time, enabling parallel, fault-tolerant processing.
+
+**How partition assignment works:**
+```
+Topic: "orders" with 6 partitions [P0, P1, P2, P3, P4, P5]
+
+Consumer Group A (3 consumers):
+  Consumer 1: [P0, P1]
+  Consumer 2: [P2, P3]
+  Consumer 3: [P4, P5]
+
+→ Each message is processed by exactly one consumer in Group A
+→ Processing parallelism = number of partitions (max)
+```
+
+**Multiple consumer groups:**
+```
+"orders" topic
+  ↓ (each group gets ALL messages independently)
+Consumer Group A (fulfillment team): processes all orders
+Consumer Group B (analytics team): processes all orders
+Consumer Group C (fraud team): processes all orders
+```
+
+Each group maintains its own offset (bookmark of where it's read up to). Adding a new group doesn't affect existing groups — it reads from the beginning or the latest, independently.
+
+**Rebalancing:** When a consumer joins or leaves the group, Kafka triggers a "rebalance" — reassigns partitions among the current consumers. During rebalancing, consumption is briefly paused.
+
+**Scaling rule:** To scale consumption throughput, add more consumers to the group — up to the number of partitions. More consumers than partitions → some consumers idle.
+
+**Implementation:**
+```python
+from confluent_kafka import Consumer
+
+c = Consumer({
+    'bootstrap.servers': 'kafka:9092',
+    'group.id': 'fulfillment-service',  # ← consumer group
+    'auto.offset.reset': 'earliest'
+})
+c.subscribe(['orders'])
+
+while True:
+    msg = c.poll(1.0)
+    if msg: process_order(msg.value())
+```
+
+---
+
+### Q319. What are at-least-once, at-most-once, and exactly-once delivery semantics?
+
+**Answer:**
+
+These describe the guarantees a messaging system provides about whether and how many times a message is delivered.
+
+**At-most-once:** Message is delivered zero or one time. If a failure occurs before the consumer acknowledges, the message is lost — never retried.
+```
+Producer → Kafka (fire and forget, no ack)
+Consumer → processes message → crashes before ack
+→ Message lost forever
+```
+- ✅ Lowest latency, simplest
+- ❌ Can lose messages
+- Use when: metrics/analytics where losing some data is acceptable
+
+**At-least-once:** Message is delivered one or more times. On failure, it's retried — but could be processed twice.
+```
+Consumer → processes message → crashes before ack
+→ Message redelivered → processed again → duplicate!
+```
+- ✅ No message loss
+- ❌ Duplicate processing possible
+- Use when: notifications (idempotent handlers), data pipelines (dedup on consumption)
+- **Most common in practice**
+
+**Exactly-once:** Every message processed exactly once, even in the presence of failures.
+- ✅ Correct by definition
+- ❌ Complex to implement, higher latency overhead
+- Requires: idempotent producers + transactional consumers
+- Kafka supports this via **Kafka Transactions** (transactional producers + Kafka Streams)
+
+**Practical advice (DDIA perspective):** "Exactly-once" at the messaging layer is possible, but you also need idempotent consumers. The simplest approach: at-least-once delivery + idempotent message handlers. An idempotent handler that processes the same message twice produces the same result as processing it once.
+
+```python
+def handle_order_created(order_id):
+    # Idempotent: check if already processed
+    if db.exists(f"processed:order:{order_id}"):
+        return  # skip duplicate
+    process_order(order_id)
+    db.set(f"processed:order:{order_id}", True)
+```
+
+---
+
+### Q320. What is message prioritization in queuing systems?
+
+**Answer:**
+
+**Message prioritization** allows high-priority messages to be processed before lower-priority ones, even if the lower-priority messages were queued earlier.
+
+**Use cases:**
+- Premium users' requests processed before free-tier users
+- Critical alerts before informational logs
+- SLA-bound orders processed before best-effort ones
+
+**Implementation approaches:**
+
+**1. Priority queue (RabbitMQ):**
+```python
+# Declare a queue with max priority level
+channel.queue_declare(queue='tasks', arguments={'x-max-priority': 10})
+
+# Publish with priority
+channel.basic_publish(
+    exchange='', routing_key='tasks',
+    body=json.dumps(task),
+    properties=pika.BasicProperties(priority=8)  # 0-10
+)
+```
+
+**2. Separate queues per priority tier:**
+```
+high_priority_queue   → workers poll this first
+medium_priority_queue → workers poll if high is empty
+low_priority_queue    → workers poll if both empty
+```
+Simpler, more transparent, easier to monitor queue depths separately.
+
+**3. Kafka (no native priority):** Kafka doesn't support priorities. Workaround: separate topics per priority, consumers check topics in order.
+
+**Starvation risk:** If high-priority messages arrive constantly, low-priority messages are never processed. Mitigate with **weighted fair queuing** — process N high-priority for every M low-priority messages, ensuring eventual processing for all.
 
 ---
 
@@ -4220,6 +5177,141 @@ function isEnabledForUser(flag, userId) {
 
 ---
 
+### Q321. What is secrets management and how do you handle credentials in production?
+
+**Answer:**
+
+**Secrets** are sensitive values that grant access to resources: database passwords, API keys, TLS certificates, OAuth client secrets. Poor secrets management is one of the most common sources of security breaches.
+
+**Anti-patterns to avoid:**
+```
+❌ Hardcode in source code:    DB_PASSWORD = "mypassword123"
+❌ Store in environment files: .env committed to git
+❌ Log secrets accidentally:   print(f"Connecting with password: {password}")
+❌ Long-lived credentials:     API keys valid indefinitely
+```
+
+**The 12-factor app approach:** Store secrets in environment variables, injected at runtime — not in code or config files.
+
+**Production-grade secrets management:**
+
+**HashiCorp Vault:** Central secrets store with dynamic credentials, access control, and audit logging.
+```python
+# Dynamic secrets: Vault generates a DB password just for this service instance
+# Valid for 1 hour, then auto-rotated
+secret = vault_client.secrets.database.generate_credentials(name="my-app")
+db = connect(username=secret.username, password=secret.password)
+```
+
+**AWS Secrets Manager / GCP Secret Manager:** Managed services. Automatic rotation, versioning, audit trails.
+```python
+import boto3
+secret = boto3.client('secretsmanager').get_secret_value(SecretId='prod/db/password')
+```
+
+**Kubernetes Secrets:** Store secrets as Kubernetes objects, mount as files or env vars into pods. Encrypt at rest with a KMS provider.
+
+**Best practices:**
+- Short-lived credentials over long-lived (reduces blast radius if leaked)
+- Least privilege: each service gets only the secrets it needs
+- Audit access: who accessed which secret when
+- Never log secrets. Use `--mask-password` in shell scripts.
+
+---
+
+### Q322. What is the principle of least privilege and how do you implement it in cloud environments?
+
+**Answer:**
+
+The **principle of least privilege (PoLP)** states that every user, process, and service should have exactly the minimum permissions needed to do its job — nothing more. This limits the damage an attacker can do if they compromise any one component.
+
+**Why it matters:** A compromised microservice with admin-level cloud permissions can delete all S3 buckets, spin up crypto miners, or exfiltrate all data. With least privilege, the blast radius is limited to what that service legitimately needs.
+
+**Cloud IAM implementation (AWS example):**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "s3:GetObject",
+      "s3:PutObject"
+    ],
+    "Resource": "arn:aws:s3:::my-app-bucket/uploads/*"
+  }]
+}
+// This service can ONLY read and write to the uploads/ prefix
+// Cannot: delete objects, access other buckets, call any other AWS service
+```
+
+**Service accounts in Kubernetes:**
+```yaml
+# Each pod gets a service account with minimal IAM role
+spec:
+  serviceAccountName: order-processor  # only has SQS read + DynamoDB write
+```
+
+**Database permissions:**
+```sql
+-- Application user only gets what it needs
+GRANT SELECT, INSERT, UPDATE ON orders TO app_user;
+-- NOT: GRANT ALL PRIVILEGES — never give a web app DDL permissions
+```
+
+**Practical approach:**
+1. Start with zero permissions
+2. Add only what fails in testing
+3. Review and prune permissions quarterly
+4. Use resource policies (S3 bucket policies, SQS queue policies) as a second layer
+
+---
+
+### Q323. What are the most important security headers for web applications?
+
+**Answer:**
+
+HTTP security headers instruct the browser on security behaviors — they're a cheap, high-impact layer of defense. Missing headers are consistently flagged in security audits.
+
+**Critical headers:**
+
+**Content-Security-Policy (CSP):** Defines which sources of scripts, styles, and images are allowed. Prevents XSS by blocking inline scripts and unauthorized external sources.
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' cdn.example.com; img-src *
+```
+
+**Strict-Transport-Security (HSTS):** Forces HTTPS. Tells browsers to never connect via HTTP again.
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+```
+
+**X-Content-Type-Options:** Prevents MIME sniffing — browser trusts the declared Content-Type, doesn't try to "sniff" what the file really is.
+```
+X-Content-Type-Options: nosniff
+```
+
+**X-Frame-Options / frame-ancestors:** Prevents clickjacking by controlling if your page can be embedded in iframes.
+```
+X-Frame-Options: DENY
+// Modern equivalent:
+Content-Security-Policy: frame-ancestors 'none'
+```
+
+**Referrer-Policy:** Controls how much referrer information is sent when users navigate away.
+```
+Referrer-Policy: strict-origin-when-cross-origin
+```
+
+**Permissions-Policy:** Restricts browser features (camera, microphone, geolocation) the page can use.
+```
+Permissions-Policy: camera=(), microphone=(), geolocation=(self)
+```
+
+**Implementation:** Set these in your web server/CDN config, not in application code — they apply to every response automatically.
+
+**Security header grader:** https://securityheaders.com grades your current headers and explains what's missing.
+
+---
+
 ### Q239. How would you design a distributed file storage system like Dropbox?
 
 **Answer:**
@@ -4360,6 +5452,142 @@ Coordinator: "Commit!"
 **5. Recurring tasks:** After completion, calculate and set the next `next_run_at`.
 
 **Existing solutions:** AWS EventBridge Scheduler, Airflow, Celery beat, Temporal.io — use these before building custom.
+
+---
+
+### Q324. How would you design a distributed rate limiter? (Alex Xu, Ch. 4)
+
+**Answer:**
+
+A rate limiter restricts how many requests a client can make in a time window. At scale with multiple API servers, you need a *distributed* rate limiter that shares state across all nodes.
+
+**Where to put it:** API Gateway or a middleware layer — before requests reach application servers.
+
+**Algorithm choice:**
+
+**Token bucket (recommended):** Each user has a bucket that refills at a constant rate. Each request consumes a token. If the bucket is empty → reject with 429.
+```python
+def is_allowed(user_id: str, capacity: int = 100, refill_rate: int = 10) -> bool:
+    key = f"ratelimit:{user_id}"
+    tokens, last_refill = redis.hmget(key, "tokens", "last_refill")
+    
+    now = time.time()
+    elapsed = now - float(last_refill or now)
+    tokens = min(capacity, float(tokens or capacity) + elapsed * refill_rate)
+    
+    if tokens < 1:
+        return False  # Rate limited
+    
+    redis.hmset(key, {"tokens": tokens - 1, "last_refill": now})
+    redis.expire(key, 3600)
+    return True
+```
+
+**Distributed design with Redis:**
+```
+[API Server 1] ──→ [Redis Cluster] ← shared rate limit state
+[API Server 2] ──→      ↑
+[API Server 3] ──→      ↑
+```
+
+Use Redis atomic operations (`EVAL` Lua scripts or `SET NX` + `INCRBY`) to prevent race conditions — two servers incrementing the same counter simultaneously.
+
+**Sliding window log:** More accurate than fixed windows but memory-intensive. Store timestamps of each request in a Redis sorted set, count entries in the last N seconds.
+
+**Response headers** to communicate rate limit status:
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 43
+X-RateLimit-Reset: 1735689600
+Retry-After: 60  (when returning 429)
+```
+
+**Multi-tier rate limiting:** API level (per-endpoint), user level, IP level, global. Different limits for different tiers (free vs. paid users).
+
+---
+
+### Q325. How would you design a distributed key-value store? (Alex Xu Ch. 6 / DDIA)
+
+**Answer:**
+
+A distributed key-value store (like DynamoDB, Cassandra, Redis Cluster) stores `{key: value}` pairs across many nodes with fault tolerance.
+
+**Core design decisions (following DDIA's framework):**
+
+**1. Data partitioning:** Use consistent hashing to map keys to nodes. Adding/removing nodes only remaps a fraction of keys.
+```
+Ring: 0 ─── Node A ─── Node B ─── Node C ─── 0
+Key hash → clockwise → assigned to next node
+```
+
+**2. Replication:** Each key is stored on N nodes (N=3 is common). Provides fault tolerance — 2 node failures with N=3 still works.
+
+**3. Consistency model (CAP trade-off):**
+- **Write quorum W, Read quorum R, total replicas N**
+- `W + R > N` ensures consistency (at least one node has the latest version)
+- Strong consistency: W=2, R=2, N=3 (slower writes)
+- High availability: W=1, R=1, N=3 (eventual consistency, faster)
+
+**4. Conflict resolution:** With W=1, two concurrent writes can create conflicts. Use **vector clocks** to detect conflicts, and last-write-wins (LWW) or application-level merge to resolve.
+
+**5. Failure handling:**
+- **Gossip protocol:** Nodes exchange health info — no single point of failure
+- **Hinted handoff:** If target node is down, a neighbor stores the data temporarily and forwards when it recovers
+- **Merkle trees:** Detect inconsistencies between replicas efficiently for anti-entropy repair
+
+**6. Read repair:** When a read finds stale data on a replica (during the quorum read), the coordinator sends the latest version to the stale replica.
+
+**Simplified write path:**
+```
+Client → Coordinator Node
+  → Coordinator hashes key, finds responsible nodes
+  → Sends write to W replicas
+  → Returns success after W acks
+  → Remaining replicas updated asynchronously
+```
+
+---
+
+### Q326. How would you design a web crawler? (Alex Xu, Ch. 9)
+
+**Answer:**
+
+A web crawler systematically browses the web, downloading and indexing pages. At scale (billions of URLs), it's a distributed system challenge.
+
+**Core components:**
+
+**1. URL Frontier (queue):** Stores URLs to visit. Prioritizes by importance (PageRank, freshness). Politeness constraints ensure you don't hammer one domain.
+```
+frontier.add_url("https://example.com/page1", priority=high)
+# Politeness: only one request per domain per second
+```
+
+**2. Fetcher:** Downloads pages using HTTP. Handles retries, robots.txt compliance, rate limiting per domain.
+
+**3. Parser:** Extracts new URLs from HTML, detects duplicate content.
+
+**4. URL deduplication:** Bloom filter to check if a URL has already been visited — space-efficient (1 bit per URL approximately).
+```python
+bloom_filter = BloomFilter(capacity=10_000_000, error_rate=0.001)
+if url not in bloom_filter:
+    frontier.add(url)
+    bloom_filter.add(url)
+```
+
+**5. Content deduplication:** Hash page content (SimHash for near-duplicate detection). Skip storing pages that are 95%+ similar to existing content.
+
+**6. Storage:** Crawled content → distributed object storage (S3). Metadata/index → database.
+
+**Distributed architecture:**
+```
+[URL Frontier (Kafka)] → [Fetcher Workers x100] → [Parser Workers x100]
+                              ↓                            ↓
+                         [Content Store]          [URL Frontier (loop)]
+```
+
+**Scale numbers (Google-scale):** 5B URLs, crawl 1B pages/day = ~11,600 pages/sec. Need 1000+ fetcher workers. URL frontier = Kafka with priority partitions.
+
+**Politeness / ethics:** Respect `robots.txt`, set meaningful User-Agent, don't overload small sites, honor `Crawl-Delay` directive.
 
 ---
 

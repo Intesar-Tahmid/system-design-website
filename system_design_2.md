@@ -582,6 +582,141 @@ Service A → Envoy sidecar A → [network] → Envoy sidecar B → Service B
 
 ---
 
+### Q327. What is Helm and how does it manage Kubernetes application deployments?
+
+**Answer:**
+
+**Helm** is the package manager for Kubernetes — it bundles all the Kubernetes YAML manifests for an application into a reusable, versioned package called a **chart**.
+
+**Problem without Helm:**
+```bash
+# Deploying "my-app" requires maintaining and applying:
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f ingress.yaml
+kubectl apply -f configmap.yaml
+kubectl apply -f hpa.yaml
+# 5+ files, different values per environment (dev/staging/prod)
+```
+
+**With Helm:**
+```bash
+# Install with environment-specific values
+helm install my-app ./my-app-chart --values values-prod.yaml
+
+# Upgrade (rolling deploy)
+helm upgrade my-app ./my-app-chart --values values-prod.yaml --set image.tag=v2.3.1
+
+# Rollback to previous version
+helm rollback my-app 1
+```
+
+**Chart structure:**
+```
+my-app/
+├── Chart.yaml        # metadata: name, version, description
+├── values.yaml       # default values (overridden per environment)
+└── templates/
+    ├── deployment.yaml  # uses {{ .Values.image.tag }}, {{ .Values.replicas }}
+    ├── service.yaml
+    └── ingress.yaml
+```
+
+**Helm values enable environment promotion:**
+```yaml
+# values-dev.yaml
+replicas: 1
+image.tag: latest
+resources.limits.memory: 512Mi
+
+# values-prod.yaml
+replicas: 5
+image.tag: v2.3.1   # pinned, never 'latest' in prod
+resources.limits.memory: 2Gi
+```
+
+**Helm repositories:** Charts are shared via repositories (Artifact Hub). Install popular apps like Prometheus, cert-manager, or nginx-ingress with a single command rather than writing hundreds of lines of YAML.
+
+---
+
+### Q328. What is infrastructure drift and how do you detect and fix it?
+
+**Answer:**
+
+**Infrastructure drift** occurs when the actual state of your infrastructure diverges from the desired state defined in your IaC (Terraform, CloudFormation). This happens when someone manually changes a resource in the AWS console, a cloud provider changes a default, or an incomplete apply leaves partial changes.
+
+**Why drift is dangerous:**
+- "It works in staging" — because staging and prod have drifted apart
+- Next Terraform apply might revert manual "emergency" fixes
+- Security: someone opened port 0.0.0.0:22 in the AWS console — Terraform doesn't know
+
+**Detecting drift:**
+
+**Terraform:**
+```bash
+# Compare current state with real infrastructure
+terraform plan
+
+# If output shows changes you didn't make → drift detected
+# Plan output: "~ resource will be updated in-place"
+# "- resource will be destroyed (exists in real infra, not in code)"
+```
+
+**AWS Config + Config Rules:** Continuously monitors resource configurations and alerts when they deviate from compliance rules.
+
+**Pulumi, CDK:** Similar plan/diff commands.
+
+**Fixing drift options:**
+
+1. **Import the change into state:** Accept the manual change, bring it into Terraform state
+   ```bash
+   terraform import aws_security_group.web sg-0123456789abcdef0
+   ```
+
+2. **Apply to revert:** Run `terraform apply` to revert the manual change back to the desired state
+
+3. **Update IaC to match:** If the manual change was intentional, update the code to match reality
+
+**Prevention:** Never make manual changes to IaC-managed resources. If you must, immediately update the code. Block manual access with SCPs (AWS Service Control Policies) that prevent console changes to managed resources.
+
+---
+
+### Q329. What is a deployment environment strategy and what are the best practices?
+
+**Answer:**
+
+A deployment environment strategy defines a set of isolated environments through which code progresses from development to production, each serving a different validation purpose.
+
+**Common environment progression:**
+
+```
+Dev → Staging → (Canary/UAT) → Production
+```
+
+**Development (dev/local):** Each developer's local machine or a shared dev cluster. Fast iteration, no stability requirements. May use mocked external services.
+
+**Staging:** Mirrors production as closely as possible — same infrastructure size (or scaled-down), same data (anonymized), same integrations. Final validation before prod.
+
+**Key principle:** Production parity. The more staging differs from production, the less valuable it is. "Works in staging" should be highly predictive of "works in production."
+
+**Canary / Pre-production:** A small production-like environment or a fraction of production traffic. Used for final validation with real traffic patterns.
+
+**Production:** The real system. Changes here affect real users.
+
+**Best practices:**
+
+| Practice | Why |
+|----------|-----|
+| Automated promotion (CI/CD) | Removes manual error, consistent process |
+| Environment-specific secrets | Never share credentials between environments |
+| Infrastructure as Code per environment | Staging infra defined in code, not click-ops |
+| Separate databases per environment | Prevent staging from corrupting prod data |
+| Feature flags instead of env branching | Deploy to prod but control visibility |
+
+**Anti-pattern — Environment snowflakes:** Manually configured environments that drift over time and become unique ("snowflakes"). They give false confidence — "passed staging" means nothing if staging is different from prod.
+
+---
+
 ## CI/CD Pipelines
 
 ---
@@ -993,6 +1128,137 @@ hotfix  → main + develop
 **Trunk-based development scales better:** Companies like Google (30,000 engineers, one monorepo) use trunk-based development. GitFlow adds process that slows teams down without proportional benefit.
 
 **Recommendation:** Feature branches for code review (1-2 day max lifespan) + trunk-based development with feature flags > GitFlow for teams doing CI/CD seriously.
+
+---
+
+### Q330. What is a deployment smoke test and why is it essential?
+
+**Answer:**
+
+A **smoke test** (also called a sanity check) is a minimal set of automated tests run immediately after a deployment to verify the application is basically operational — the "smoke" metaphor: turn on a circuit, check if smoke appears before running a full test.
+
+**What smoke tests check:**
+- Critical endpoints return 200 (homepage, health check, login page)
+- Core user flows work end-to-end (can a user log in? can a product page load?)
+- Key integrations are connected (database reachable, cache working, external APIs responding)
+
+**Why they matter:**
+```
+Deployment pipeline:
+Build → Unit tests → Integration tests → Deploy to Staging → SMOKE TESTS → Deploy to Prod → SMOKE TESTS
+
+Without smoke tests:
+Deploy → hours later: "Why are users reporting the site is broken?"
+→ No traffic for 4 hours because homepage was returning 500
+
+With smoke tests:
+Deploy → 2 minutes later: smoke test fails → pipeline halted → auto-rollback triggered
+→ Zero users affected
+```
+
+**Example implementation:**
+```python
+# smoke_test.py — runs after every deployment
+import httpx
+
+BASE_URL = os.environ["APP_URL"]
+
+def test_homepage():
+    r = httpx.get(f"{BASE_URL}/")
+    assert r.status_code == 200, f"Homepage failed: {r.status_code}"
+
+def test_health():
+    r = httpx.get(f"{BASE_URL}/health")
+    assert r.json()["status"] == "healthy"
+
+def test_core_api():
+    r = httpx.get(f"{BASE_URL}/api/products?limit=1")
+    assert r.status_code == 200 and len(r.json()["items"]) > 0
+```
+
+**Scope:** Smoke tests should take < 2 minutes. They're a quick sanity check, not a full test suite.
+
+---
+
+### Q331. What is artifact versioning in CI/CD and why does semantic versioning matter?
+
+**Answer:**
+
+An **artifact** is any deployable output of a build — a Docker image, npm package, JAR file, or Python wheel. **Artifact versioning** assigns a unique, immutable identifier to each build so you can always trace exactly what's deployed.
+
+**Why immutable versions matter:**
+```
+Bad:  image: myapp:latest  → "latest" changes every push; you don't know what's deployed
+Good: image: myapp:v2.3.1  → pinned, immutable, fully traceable
+```
+
+**Semantic versioning (SemVer):** `MAJOR.MINOR.PATCH`
+- **PATCH (v2.3.1 → v2.3.2):** Bug fixes, backwards-compatible
+- **MINOR (v2.3.x → v2.4.0):** New features, backwards-compatible
+- **MAJOR (v2.x.x → v3.0.0):** Breaking changes
+
+```
+git tag v2.3.1
+→ CI builds myapp:v2.3.1
+→ Also tags myapp:2.3 and myapp:2 (floating tags for range pinning)
+→ Also tags myapp:git-a1b2c3d (commit-based for exact traceability)
+```
+
+**Git-based versioning in CI:**
+```yaml
+# GitHub Actions
+- name: Set version
+  run: echo "VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
+
+- name: Build and push
+  run: |
+    docker build -t myapp:${{ env.VERSION }} .
+    docker push myapp:${{ env.VERSION }}
+```
+
+**Artifact repositories:** Store artifacts with versions in Nexus, JFrog Artifactory, AWS ECR, or GitHub Packages. Immutable artifact versions make rollbacks trivial — re-deploy the previous version tag.
+
+---
+
+### Q332. What is secrets injection in CI/CD and what are the risks?
+
+**Answer:**
+
+CI/CD pipelines need access to secrets (deployment keys, cloud credentials, API tokens) to run. **Secrets injection** is how those secrets get into the pipeline without hardcoding them.
+
+**Methods:**
+
+**CI/CD native secrets (GitHub Actions, GitLab CI):**
+```yaml
+# GitHub Actions — secrets stored in repository settings
+- name: Deploy
+  env:
+    AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  run: terraform apply
+```
+Stored encrypted in the CI system. Masked in logs. ✅ Easy, ❌ still long-lived credentials.
+
+**OIDC (OpenID Connect) — no stored secrets:**
+```yaml
+# GitHub Actions with AWS OIDC — no stored AWS keys!
+permissions:
+  id-token: write
+
+- name: Configure AWS credentials
+  uses: aws-actions/configure-aws-credentials@v2
+  with:
+    role-to-assume: arn:aws:iam::123456789:role/github-actions-deployer
+    aws-region: us-east-1
+# GitHub gets a short-lived AWS token via OIDC federation
+```
+GitHub proves to AWS "I am this repository's CI pipeline" → AWS issues a short-lived token. No long-lived secret stored anywhere. **Best practice.**
+
+**Risks:**
+- **Secret sprawl:** Secrets in 5 different CI systems, no central rotation
+- **Log exposure:** Accidentally `echo $SECRET` in a script — CI logs are visible to all developers
+- **Overly broad permissions:** CI role has admin access to everything vs. just what it needs
+- **Fork PRs:** Public repo PRs from forks can't access secrets (GitHub protection), but private repos: any contributor can create a PR that exfiltrates secrets
 
 ---
 
@@ -1452,6 +1718,119 @@ API Gateway
 
 ---
 
+### Q333. What are the four golden signals of monitoring?
+
+**Answer:**
+
+The **four golden signals** are Google SRE's framework for the minimum set of metrics every service should monitor. If you can only measure four things, measure these.
+
+**1. Latency:** How long it takes to service a request.
+- Measure: p50, p95, p99 (not just averages — averages hide tail latency)
+- Distinguish: successful request latency vs. error latency
+```
+Metric: http_request_duration_seconds{status="200", endpoint="/api/orders"}
+Alert: p99 > 500ms for 5 minutes
+```
+
+**2. Traffic:** How much demand is being placed on the system.
+- Web: requests per second; database: queries per second; messaging: messages/sec
+- Use for: capacity planning and understanding load patterns
+```
+Metric: http_requests_total rate (per 5 min)
+```
+
+**3. Errors:** Rate of requests that fail.
+- Include: explicit errors (5xx), implicit errors (200 but wrong content), policy violations (rate limit hits)
+```
+Metric: http_requests_total{status=~"5.."}
+Alert: error rate > 1% for 2 minutes
+```
+
+**4. Saturation:** How "full" your service is — the resource most constrained.
+- CPU utilization, memory usage, disk I/O, connection pool usage, queue depth
+- Saturation metrics predict problems *before* they cause user impact
+```
+Metric: db_connection_pool_usage_pct
+Alert: connection pool > 80% for 10 minutes
+```
+
+**Why these four:** They cover user experience (latency, errors), demand (traffic), and capacity (saturation). Together, they tell you if something is wrong, how severe it is, and roughly why.
+
+---
+
+### Q334. What is the USE method for infrastructure performance analysis?
+
+**Answer:**
+
+The **USE method** (coined by Brendan Gregg) is a systematic approach to identifying performance bottlenecks in infrastructure. For every resource, check three metrics:
+
+- **U**tilization: What percentage of time is the resource busy? (CPU 80% utilized)
+- **S**aturation: How much extra work is queued/waiting? (run queue length, disk I/O wait)
+- **E**rrors: Are there errors occurring? (packet drops, disk errors, memory ECC errors)
+
+**Applying USE to common resources:**
+
+| Resource | Utilization | Saturation | Errors |
+|----------|-------------|------------|--------|
+| CPU | CPU % | Run queue length | — |
+| Memory | Memory used % | Swap usage, OOM kills | ECC errors |
+| Disk | I/O % time | Disk I/O wait queue | Disk errors |
+| Network | Bandwidth used | Packet drops, retransmits | Interface errors |
+| DB connections | Pool % used | Requests waiting for connection | Connection timeouts |
+
+**USE vs. the four golden signals:**
+- **Golden signals** → user-facing perspective (latency, errors)
+- **USE method** → infrastructure perspective (what resource is the bottleneck)
+
+**Debugging flow:**
+```
+Alert: API p99 latency > 2s (golden signal: latency)
+→ USE method investigation:
+  CPU utilization: 30% (fine)
+  Memory utilization: 85% (high)
+  Memory saturation: swap in use (swap = memory saturation)
+→ Root cause: memory pressure causing GC pressure → p99 latency spikes
+→ Fix: increase memory limit or optimize memory usage
+```
+
+---
+
+### Q335. What is error budget burn rate and how do SRE teams alert on it?
+
+**Answer:**
+
+An **error budget** is the acceptable amount of downtime/errors over a time window based on your SLO. If your SLO is 99.9% availability for 30 days:
+
+```
+Error budget = 0.1% × 30 days × 24h × 60min = 43.2 minutes per month
+```
+
+**Error budget burn rate** measures how fast you're consuming your budget. A burn rate of 1.0 means you'll use exactly 100% of your budget in the SLO window. A burn rate of 10 means you'll exhaust it 10× faster — in 3 days instead of 30.
+
+**Why burn rate matters:** A 2% error rate sounds fine if it lasts 5 minutes (uses 0.3% of monthly budget). But if it continues for 24 hours, you've consumed 144% of your monthly budget — a critical situation.
+
+**Google's multi-window alert approach (from SRE Workbook):**
+
+```yaml
+# Alert only when burn rate is high AND sustained
+alerts:
+  - name: HighBurnRate
+    condition: |
+      burn_rate(1h) > 14.4   # consuming budget 14.4x fast = exhausts in 2 days
+      AND
+      burn_rate(5m) > 14.4   # confirmed short window too (avoid false positives)
+    severity: page_immediately
+
+  - name: MediumBurnRate
+    condition: |
+      burn_rate(6h) > 6      # exhausts in 5 days
+    severity: ticket
+```
+
+**Why multi-window:** A single 5-minute window has too many false positives. A single 1-hour window detects problems too slowly. Requiring both ensures fast detection with high confidence.
+
+---
+
 ## MLOps Fundamentals
 
 ---
@@ -1901,6 +2280,124 @@ Both are automated sequences of steps, but ML pipelines have unique challenges:
 
 ---
 
+### Q336. What is a model card and what should it contain?
+
+**Answer:**
+
+A **model card** (introduced by Google in 2019) is a standardized documentation artifact for a trained ML model that communicates its intended use, performance characteristics, limitations, and ethical considerations. It's the "product spec" for an ML model.
+
+**Key sections:**
+
+**1. Model overview:**
+- Model name, version, type (classification, regression, LLM)
+- Training date, responsible team, contact
+
+**2. Intended use:**
+- Primary use cases the model is designed for
+- Out-of-scope uses (what it should NOT be used for)
+
+**3. Training data:**
+- Dataset description, size, date range
+- Known biases or gaps in the training data
+
+**4. Evaluation results:**
+- Metrics on overall test set: AUC=0.87, F1=0.82
+- **Disaggregated metrics** — performance broken down by subgroups (age, gender, geography, device type)
+- Performance gaps reveal bias
+
+**5. Limitations and risks:**
+- What fails? Low confidence on edge cases, unfamiliar inputs?
+- Known failure modes documented honestly
+
+**6. Ethical considerations:**
+- Potential harms if misused
+- Bias analysis findings
+
+**Example disaggregated metrics (why they matter):**
+```
+Fraud detection model overall AUC: 0.91  ← looks great
+
+By geography:
+  US/EU users:  AUC = 0.94
+  Southeast Asia: AUC = 0.73  ← major gap! underrepresented in training data
+```
+
+**Why model cards are required at serious organizations:** Regulators (EU AI Act), app stores (Apple/Google for AI features), and enterprise procurement increasingly require model cards before deployment.
+
+---
+
+### Q337. What is ML model governance and why does it matter?
+
+**Answer:**
+
+**ML model governance** is the set of processes, policies, and controls that ensure ML models are developed, deployed, and monitored responsibly — managing risk, ensuring compliance, and maintaining accountability.
+
+**Why it matters:** Without governance:
+- A biased model gets deployed and causes discriminatory outcomes
+- A model trained on GDPR-regulated data gets used in a context it wasn't approved for
+- A stale model (deployed 3 years ago, never retrained) makes wrong decisions
+- No one knows who approved a model or what data it was trained on
+
+**Key governance components:**
+
+**Model registry with approval workflows:**
+```
+Data Scientist trains model → submits to registry
+→ Model card review (performance, bias analysis)
+→ Security review (training data privacy)
+→ Legal/compliance approval
+→ Technical review (latency, cost)
+→ Approved → promoted to production
+```
+
+**Lineage tracking:** Every model stores: training data version, code commit, hyperparameters, evaluation results, who approved it.
+
+**Audit trail:** Who deployed what, when, why. Required for SOC2, ISO 27001, EU AI Act compliance.
+
+**Continuous monitoring obligations:** High-risk models (credit scoring, medical diagnosis) must have ongoing performance monitoring, regular revalidation, and documented incident response procedures.
+
+**EU AI Act (2024):** Classifies AI systems by risk. High-risk systems require conformity assessment, technical documentation (model cards), human oversight, and registration in an EU database — before deployment.
+
+---
+
+### Q338. What is AutoML and when should you use it vs. manual model development?
+
+**Answer:**
+
+**AutoML (Automated Machine Learning)** automates the pipeline of selecting algorithms, engineering features, tuning hyperparameters, and sometimes even neural architecture search — reducing the need for manual ML expertise.
+
+**What AutoML automates:**
+- Feature preprocessing (imputation, encoding, scaling)
+- Algorithm selection (linear, tree-based, neural network — tries many)
+- Hyperparameter tuning (grid search, Bayesian optimization)
+- Ensemble creation (combines best models)
+- Neural Architecture Search (NAS) — for AutoML systems like Google AutoML
+
+**Popular tools:**
+- **AutoSklearn, AutoGluon:** Python-first, scikit-learn compatible
+- **H2O AutoML:** Enterprise-grade, fast
+- **Google Vertex AI AutoML:** Fully managed, no code required
+- **TPOT:** Genetic programming for pipeline optimization
+
+**When to use AutoML:**
+
+✅ **Use when:**
+- Quick baseline model to validate if ML can solve the problem at all
+- Non-ML engineers need a model for a product feature
+- Tabular data classification/regression (AutoML excels here)
+- Time-boxed experiments where you need results fast
+
+❌ **Don't use when:**
+- Custom model architectures needed (specialized CNNs, transformers)
+- Deep domain knowledge must inform feature engineering (medical imaging)
+- Production latency/size constraints require careful model design
+- You need interpretability/explainability (AutoML black-boxes the process)
+- You have non-standard data types (graphs, custom embeddings)
+
+**Practical workflow:** Use AutoML to establish a strong baseline in 1-2 days, then invest manual effort only if AutoML's result doesn't meet requirements.
+
+---
+
 ## Data Pipelines & ETL
 
 ---
@@ -2253,6 +2750,133 @@ with DAG("daily_etl", schedule_interval="0 6 * * *") as dag:
 
 ---
 
+### Q339. What is a slowly changing dimension (SCD) and what are the types?
+
+**Answer:**
+
+In data warehousing, **dimensions** are descriptive attributes (customer name, product category, employee department). **Slowly Changing Dimensions (SCDs)** describe how to handle changes to these attributes over time — does a customer's address change matter for historical orders?
+
+**Type 1 — Overwrite:** Simply update the value. No history kept.
+```sql
+UPDATE dim_customers SET city = 'New York' WHERE customer_id = 42;
+-- Historical records now show New York, even for orders placed when customer lived in Boston
+```
+Use when: Fixing errors, when history doesn't matter
+
+**Type 2 — Add new row:** Keep the old record, add a new one with a date range. Most common for historical accuracy.
+```
+customer_id | city    | start_date | end_date   | is_current
+42          | Boston  | 2020-01-01 | 2024-06-30 | false
+42          | NewYork | 2024-07-01 | 9999-12-31 | true
+```
+Orders placed in 2023 join to the Boston record; 2025 orders join to New York.
+
+**Type 3 — Add new column:** Keep both current and previous value in the same row.
+```
+customer_id | current_city | previous_city
+42          | New York     | Boston
+```
+Limited — only tracks one level of history.
+
+**Type 4 — History table:** Move history to a separate table. Main dimension table always has current values (fast lookups); history table has all versions.
+
+**Relevance for ML:** Training a model on historical orders? You need Type 2 SCD to use the customer's city at the time of the order, not today's city (point-in-time correctness).
+
+---
+
+### Q340. What is data deduplication and what are the strategies for large-scale pipelines?
+
+**Answer:**
+
+**Data deduplication** is the process of identifying and removing duplicate records from a dataset. Duplicates arise from: double-clicking submit forms, retried API calls, event replay, multiple data sources for the same entity.
+
+**Types of duplicates:**
+
+**Exact duplicates:** Every field is identical.
+```python
+df.drop_duplicates()  # Simple for small data
+# Or: keep=first/last/False
+```
+
+**Near-duplicates (fuzzy):** Records representing the same real-world entity with slight variations ("Jon Smith" vs "John Smith", two addresses for the same person).
+
+**Strategies:**
+
+**1. Unique key deduplication:** If records have a natural key (order_id, event_id), deduplicate on it.
+```sql
+-- Keep latest version of each order_id
+SELECT DISTINCT ON (order_id) *
+FROM orders ORDER BY order_id, updated_at DESC;
+```
+
+**2. Probabilistic deduplication (record linkage):** Block records by a key (same zip code), then compare within blocks using string similarity, edit distance. Scales to billions with Bloom filters + MinHash for blocking.
+
+**3. Streaming deduplication (Kafka/Flink):**
+```python
+# Redis-based dedup for stream processing
+def process_event(event):
+    key = f"seen:{event['event_id']}"
+    if redis.set(key, 1, nx=True, ex=3600):  # nx=True: only set if not exists
+        process(event)  # first time seen
+    # else: duplicate, skip
+```
+
+**4. Delta Lake / Iceberg MERGE:** For batch pipelines, use MERGE INTO (upsert) to deduplicate on load.
+
+**At scale:** Exact dedup on Spark: `df.dropDuplicates(["event_id"])`. For 10B+ records, partition by date first, then dedup within partitions.
+
+---
+
+### Q341. What is a data contract and how does it formalize producer-consumer agreements?
+
+**Answer:**
+
+A **data contract** is a formal, versioned agreement between a data producer (a team or service that generates data) and data consumers (pipelines, ML models, dashboards that depend on it). It defines the schema, semantics, quality guarantees, and SLA for a dataset.
+
+**Why data contracts exist:** Without them:
+```
+Payments team changes schema: renames "amount" to "transaction_amount"
+→ 3 downstream ML pipelines silently fail
+→ Finance dashboard shows zeros
+→ Fraud detection model starts producing NaNs
+→ It takes 2 days to find the root cause
+```
+
+**With a data contract:**
+```
+Payments team proposes schema change
+→ Contract registry checks: who depends on "amount"?
+→ Notifies 3 pipelines + finance team
+→ Payments team must either:
+   a) Provide backwards-compatible migration (keep old field, add new)
+   b) Coordinate migration timeline with all consumers
+```
+
+**Contract contents:**
+```yaml
+dataset: payments.transactions
+version: "2.1.0"
+owner: payments-team@company.com
+schema:
+  - name: transaction_id
+    type: string
+    nullable: false
+    description: "UUID, unique per transaction"
+  - name: amount
+    type: decimal(10,2)
+    nullable: false
+    description: "Transaction amount in USD"
+quality_guarantees:
+  - completeness: 99.9%  # < 0.1% null rate for required fields
+  - latency: "data available within 5 minutes of transaction"
+  - freshness: "updated every 5 minutes"
+sla: "99.9% uptime during business hours"
+```
+
+**Tools:** Soda Core, Great Expectations (for quality enforcement), Confluent Schema Registry (for Kafka schemas), dbt contracts (for SQL transformations).
+
+---
+
 ## Feature Engineering & Serving
 
 ---
@@ -2532,6 +3156,131 @@ x_standardized = (x - mean) / std
 - KNN, K-means: always normalize/standardize — distance calculations are sensitive to scale
 
 **Critical rule:** Fit the scaler on training data only. Apply (transform) to training and test data. Never fit on test data — that would leak test statistics into training.
+
+---
+
+### Q342. What is target encoding and what are the data leakage risks?
+
+**Answer:**
+
+**Target encoding** (mean encoding) replaces a categorical feature with the mean of the target variable for that category. It's powerful for high-cardinality categoricals but prone to a specific type of data leakage.
+
+**Example:**
+```
+Raw data:
+city       | converted (target)
+-----------+-------------------
+New York   | 1
+New York   | 0
+New York   | 1
+Boston     | 0
+
+Target-encoded:
+city_encoded (mean of target per city)
+New York: 0.667
+Boston:   0.000
+```
+
+**Why it outperforms one-hot encoding:** A city with 1000 examples gives a rich, meaningful signal. One-hot encoding treats every city as equally different; target encoding captures their relationship to the outcome.
+
+**The leakage risk — using the target to encode the training data:**
+```python
+# WRONG: target leaks into feature
+df['city_encoded'] = df.groupby('city')['converted'].transform('mean')
+# For a single-row category, the encoding IS the target value
+# Model learns to look up the answer directly → inflated training accuracy, bad test performance
+```
+
+**Correct approach — out-of-fold encoding (k-fold style):**
+```python
+from category_encoders import TargetEncoder
+from sklearn.model_selection import cross_val_predict
+
+encoder = TargetEncoder(smoothing=10)  # smoothing prevents overfitting rare categories
+# Fit on training folds only, transform held-out fold
+X_encoded = cross_val_predict(encoder, X_train, y_train, method='transform', cv=5)
+```
+
+**Smoothing:** Blend the category mean toward the global mean for rare categories. `smoothed = (n × category_mean + k × global_mean) / (n + k)` — prevents a category with 2 examples from getting extreme values.
+
+---
+
+### Q343. What is a feature transformation pipeline and how do you ensure training-serving consistency?
+
+**Answer:**
+
+A **feature transformation pipeline** is the sequence of operations (imputation, scaling, encoding) that transforms raw data into the features your model expects. The critical requirement: this exact same transformation must be applied at both training time and serving (inference) time.
+
+**Training-serving skew** occurs when the transformation differs:
+```
+Training:  age is normalized using mean=35, std=12
+Serving:   age is normalized using mean=38, std=10 (computed on different data)
+→ Model receives inputs it was never trained on → degraded performance
+```
+
+**The solution — serialize the fitted transformer:**
+```python
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+import joblib
+
+# Build and FIT the pipeline on training data
+pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler',  StandardScaler()),
+])
+X_train_transformed = pipeline.fit_transform(X_train)  # fit learns mean, std, etc.
+
+# Save the FITTED pipeline (includes learned parameters)
+joblib.dump(pipeline, 'preprocessing_pipeline_v1.pkl')
+
+# At inference time: load the SAME fitted pipeline
+pipeline = joblib.load('preprocessing_pipeline_v1.pkl')
+X_inference = pipeline.transform(new_data)  # uses training data's mean/std
+```
+
+**Feature store approach:** Define transformations once in the feature store. The same computation runs for training (over historical data) and for serving (on live data). No separate code to keep in sync.
+
+**What to store alongside your model artifact:** The fitted preprocessing pipeline must be versioned and stored together with the model weights — they're inseparable.
+
+---
+
+### Q344. What is dimensionality reduction and what are the main techniques?
+
+**Answer:**
+
+**Dimensionality reduction** transforms high-dimensional data into a lower-dimensional representation while preserving important structure. Essential for: visualization, noise reduction, speeding up training, avoiding the curse of dimensionality.
+
+**Curse of dimensionality:** As dimensions increase, data becomes increasingly sparse. Distance metrics lose meaning — every point is roughly equidistant from every other point. Models need exponentially more data to generalize.
+
+**Linear techniques:**
+
+**PCA (Principal Component Analysis):** Finds orthogonal directions of maximum variance. Projects data onto the top K principal components.
+```python
+from sklearn.decomposition import PCA
+
+pca = PCA(n_components=0.95)  # keep 95% of variance
+X_reduced = pca.fit_transform(X_train)  # e.g., 500 features → 47 components
+print(f"Reduced from {X_train.shape[1]} to {X_reduced.shape[1]} dimensions")
+```
+
+**Non-linear techniques:**
+
+**t-SNE:** Preserves local structure — clusters that are close in high-dimensional space stay close in 2D/3D. Good for visualization. Too slow for production.
+
+**UMAP:** Faster than t-SNE, better at preserving global structure. Widely used for visualizing embeddings (BERT representations, user embeddings).
+
+```python
+import umap
+reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1)
+embedding = reducer.fit_transform(high_dim_embeddings)
+# Plot the 2D embedding to visualize clusters
+```
+
+**Autoencoders:** Neural network learns a compressed representation (latent space). Decoder reconstructs original from compressed. Handles non-linear relationships better than PCA.
+
+**Feature selection vs. extraction trade-off:** Reduction creates new dimensions — not interpretable as original features. If interpretability matters, prefer feature selection over dimensionality reduction.
 
 ---
 
@@ -2876,6 +3625,137 @@ Optimal:         Good Bias  | Good Variance (just right)
 | High variance (overfitting) | More data, regularization (L1/L2/dropout), simpler model, cross-validation, ensemble methods |
 
 **In practice:** Start with a model complex enough to overfit intentionally (confirms the model can learn the signal), then add regularization to reduce variance. This is more reliable than starting too simple.
+
+---
+
+### Q345. What is the difference between bagging and boosting?
+
+**Answer:**
+
+Both are **ensemble methods** that combine multiple weak learners into a stronger model, but they differ fundamentally in how they train and combine the base learners.
+
+**Bagging (Bootstrap AGGregating):**
+- Train many models **in parallel**, each on a different random bootstrap sample (sample with replacement)
+- Combine predictions by **averaging** (regression) or **voting** (classification)
+- Each model is independent — can be trained simultaneously
+- **Primary goal:** Reduce variance (fix overfitting)
+
+```python
+from sklearn.ensemble import RandomForestClassifier
+# Random Forest = Bagging + feature randomness at each split
+rf = RandomForestClassifier(n_estimators=100, max_features='sqrt')
+```
+
+**Boosting:**
+- Train models **sequentially**. Each new model focuses on the mistakes of the previous ones
+- Later models assign higher weight to misclassified samples
+- Combine via **weighted sum** (models that perform better get more weight)
+- **Primary goal:** Reduce bias (fix underfitting)
+
+```python
+from sklearn.ensemble import GradientBoostingClassifier
+# Or the faster XGBoost:
+import xgboost as xgb
+model = xgb.XGBClassifier(n_estimators=200, learning_rate=0.1, max_depth=4)
+```
+
+| Aspect | Bagging | Boosting |
+|--------|---------|---------|
+| Training | Parallel | Sequential |
+| Fixes | High variance (overfitting) | High bias (underfitting) |
+| Sensitivity to noise | Robust | More sensitive |
+| Examples | Random Forest | XGBoost, LightGBM, AdaBoost |
+| Speed | Fast | Slower (sequential) |
+
+**Practical guidance:** XGBoost/LightGBM (boosting) typically wins on tabular data competitions. Random Forest (bagging) is more robust, requires less tuning, and scales easily.
+
+---
+
+### Q346. What is data augmentation and when is it most effective?
+
+**Answer:**
+
+**Data augmentation** artificially increases the size and diversity of a training dataset by applying label-preserving transformations to existing examples — creating new training samples without collecting new data.
+
+**Image augmentation (most mature):**
+```python
+from torchvision import transforms
+
+augmentation = transforms.Compose([
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(degrees=15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    transforms.RandomCrop(224, padding=4),
+    # Advanced:
+    transforms.RandomErasing(p=0.5),  # randomly mask patches
+])
+```
+A cat photo, flipped and rotated, is still a cat. This teaches the model invariances it needs for real-world robustness.
+
+**Text augmentation:**
+- **Synonym replacement:** "The quick brown fox" → "The fast brown fox"
+- **Back-translation:** English → German → English (changes phrasing while preserving meaning)
+- **Random deletion/swap/insertion of words**
+- **Generative augmentation:** Use an LLM to paraphrase examples
+
+**Time-series / tabular augmentation:**
+- Add Gaussian noise to numeric features
+- SMOTE (Synthetic Minority Over-sampling Technique): synthesize new minority-class examples for class imbalance
+
+**When it's most effective:**
+- Small datasets (< 10K examples) — biggest gains
+- Domains with known invariances (images, speech, text)
+- Class imbalance — augment minority classes
+
+**When it has little effect:**
+- Large datasets (> 1M examples) — model already learns invariances from data diversity
+- Tabular data with strong feature-target relationships (augmented examples may violate business logic)
+
+**MixUp:** Blend two images and their labels proportionally:
+```python
+alpha = np.random.beta(0.4, 0.4)
+mixed_image = alpha * image_a + (1 - alpha) * image_b
+mixed_label = alpha * label_a + (1 - alpha) * label_b
+# Forces model to behave linearly between training examples
+```
+
+---
+
+### Q347. What is catastrophic forgetting and how is it prevented in continual learning?
+
+**Answer:**
+
+**Catastrophic forgetting** is a fundamental problem in neural networks: when a model is trained on new data (Task B), it rapidly forgets what it learned about old data (Task A) because the weights are overwritten.
+
+**Example:**
+```
+Train model on Task A (cat/dog classification) → 95% accuracy
+Retrain model on Task B (car/truck classification)
+→ Now: Task B accuracy = 90%, Task A accuracy = 40% — forgot cats and dogs!
+```
+
+**Why it happens:** Gradient descent updates weights to minimize loss on current task. The same weights that encoded Task A knowledge are overwritten to minimize Task B loss.
+
+**Prevention techniques:**
+
+**Elastic Weight Consolidation (EWC):** Identifies which weights are important for Task A and penalizes changing them too much when training on Task B.
+```python
+# Loss = Task B loss + λ × Σ F_i(θ_i - θ*_i)²
+# F = Fisher information (importance of each weight for Task A)
+# θ* = optimal weights for Task A
+```
+
+**Replay methods (Experience Replay):** Store a subset of old training examples and mix them into new training batches.
+```python
+# When training on new data, also train on memory buffer samples
+batch = current_data_batch + random.sample(memory_buffer, buffer_batch_size)
+```
+
+**Progressive Neural Networks:** Add new columns/branches for new tasks. Freeze old weights entirely.
+
+**LoRA for LLM fine-tuning:** Fine-tune only low-rank adapter matrices, leaving base model weights frozen. Base model retains all original knowledge; adapters capture task-specific patterns.
+
+**Relevance for production ML:** Whenever you retrain a model on new data, you risk forgetting patterns in older data. Evaluate on both old and new data distributions when assessing a retrained model.
 
 ---
 
@@ -3534,6 +4414,143 @@ Serving: features computed from online store → same logic as training
 
 ---
 
+### Q348. How would you design a real-time bidding (RTB) system for digital advertising?
+
+**Answer:**
+
+RTB auctions run in < 100ms — the time between a page loading and an ad appearing. At scale, a major DSP (Demand-Side Platform) handles 1–5 million bid requests per second.
+
+**The auction flow:**
+```
+User loads page → Publisher SSP → sends bid request to all DSPs (10ms deadline)
+                                          ↓
+                               DSP must: lookup user profile, score ad candidates,
+                                         apply budget constraints, bid → 50-100ms total
+                                          ↓
+                               Winning DSP → ad displayed
+```
+
+**Architecture:**
+
+**1. User profile store (< 5ms lookup):**
+- Redis/Aerospike: user_id → {interests, demographics, past click history}
+- 500M+ users, need 10M lookups/sec
+- Sharded by user_id, geographically distributed
+
+**2. ML scoring engine (< 20ms):**
+- Predict CTR (click-through rate) for each candidate ad for this user in this context
+- Feature vector: user profile + ad features + context (site, time, device)
+- Model: gradient boosted tree (GBT) for speed; inference < 5ms with ONNX Runtime
+
+**3. Auction engine:**
+```python
+def run_auction(bid_request, budget_manager):
+    candidates = ad_selector.get_candidates(bid_request.user_id, limit=100)
+    scored = [(ad, ctr_model.predict(features(bid_request, ad))) for ad in candidates]
+    
+    for ad, ctr in sorted(scored, key=lambda x: -x[1])[:10]:
+        bid_price = bid_optimizer.compute(ad, ctr, budget_manager.remaining(ad.campaign_id))
+        if budget_manager.can_spend(ad.campaign_id, bid_price):
+            return BidResponse(ad_id=ad.id, price=bid_price)
+    return NoBid()
+```
+
+**4. Budget manager:** Real-time spend tracking. Prevent overspend.
+- Local pacing (per DSP server) + centralized correction
+- Smooth pacing to avoid front-loading the day's budget in the first hour
+
+**5. Win/loss tracking:** Log outcomes for ML training feedback loop — actual clicks vs. predicted CTR refines the model.
+
+---
+
+### Q349. How would you design a large-scale video recommendation system like YouTube? (Alex Xu Vol. 2)
+
+**Answer:**
+
+YouTube serves 2+ billion users, 800M+ videos, 1B+ hours watched daily. The recommendation system has three stages:
+
+**Stage 1 — Candidate generation (recall, hundreds of candidates from billions):**
+
+**Collaborative filtering:** "Users who watched what you watched also watched X." Two-tower model:
+```
+User Tower:  user_id + watch history + demographics → user embedding (256-dim)
+Video Tower: video_id + title + tags → video embedding (256-dim)
+Similarity:  cosine(user_embedding, video_embedding)
+```
+ANN search (FAISS) over 800M video embeddings to find top-500 for this user.
+
+**Content-based:** Recent watches → fetch similar videos by topic/creator/language.
+
+**Stage 2 — Ranking (precision, 500 → 50):**
+More expensive model with richer features:
+- Video quality signals (likes/dislikes ratio, completion rate)
+- User history features (average watch time, topics)
+- Context (time of day, device)
+- Diversity injection (don't rank 50 videos from the same creator)
+
+Model: deep neural network with cross-product feature interactions. Optimizes for predicted watch time, not just CTR (prevents clickbait).
+
+**Stage 3 — Post-ranking / re-ranking:**
+- Apply business rules: no controversial content before elections
+- Freshness boost: inject some new videos
+- Diversity constraint: no 3 consecutive videos from same creator
+
+**Feedback loop:**
+```
+Recommendation → User watches → Log (video_id, watch_time, user_id) 
+→ Used as training labels for next model version
+```
+
+**Scale considerations:** Candidate generation is offline (pre-computed embeddings, updated daily). Ranking is online (real-time, per-session). This split enables low latency while handling 800M+ videos.
+
+---
+
+### Q350. How would you design a metrics monitoring and alerting system? (Alex Xu Vol. 2)
+
+**Answer:**
+
+A system like Datadog or Prometheus that collects, stores, and alerts on metrics from thousands of services.
+
+**Scale:** 1000 servers × 100 metrics each × 1 data point/second = 100,000 metrics/second. Storage: 5-year retention = petabytes.
+
+**Architecture:**
+
+**1. Collection layer:**
+- **Pull model (Prometheus):** Scraper periodically GETs `/metrics` endpoints
+- **Push model (Datadog, Graphite):** Services send metrics to a collection endpoint
+- Agents (like StatsD) aggregate on the client side before sending
+
+**2. Time-series database:**
+- Data model: `(metric_name, {label: value, ...}, timestamp, value)`
+- Example: `http_requests_total{service="order-api", status="200"} 1735689600 1054321`
+- Storage optimized for: append-only writes, time-range queries, downsampling old data
+- Options: Prometheus TSDB, InfluxDB, ClickHouse, AWS Timestream
+
+**3. Query engine:**
+```
+PromQL example:
+rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m])
+→ 5-minute error rate, real-time
+```
+
+**4. Alerting engine:**
+- Rule evaluation: check alert conditions every 30 seconds
+- Alert routing: PagerDuty for P0, Slack for P1, email for P2
+- Alert deduplication: don't send 100 messages for the same alert
+
+**5. Data retention and downsampling:**
+```
+0-7 days:    raw data (1s resolution)
+7-30 days:   5-minute averages
+30-90 days:  1-hour averages
+90-365 days: 1-day averages
+→ Reduces storage 99%+ while preserving trend analysis
+```
+
+**6. Visualization layer:** Grafana, custom dashboards — query the TSDB and render charts.
+
+---
+
 ## Inference & Serving
 
 ---
@@ -3913,6 +4930,119 @@ Client → Load Balancer → Model Server
                                 → Model inference
                                 → Response
                         → Prediction Log → Monitoring
+```
+
+---
+
+### Q351. What is model warm-up and why is cold start a problem in ML inference?
+
+**Answer:**
+
+**Cold start** in ML serving means the first request(s) to a model are significantly slower than subsequent requests, because the model hasn't yet loaded and JIT-compiled its computation graph, filled its caches, or optimized its GPU kernels.
+
+**Sources of cold start latency:**
+
+**1. Model loading:** Deserializing weights from disk to GPU memory. A 7B-parameter LLM (14GB in FP16) takes 10-30 seconds to load.
+
+**2. JIT compilation:** PyTorch's `torch.compile` and TensorRT optimize the computation graph on the first run. The first inference triggers compilation; subsequent calls use the compiled version.
+
+**3. GPU kernel warm-up:** CUDA kernels for specific shapes are JIT-compiled on first use. First batch of a new shape is slower.
+
+**4. Memory allocation:** GPU memory allocators learn allocation patterns. First allocations can cause fragmentation.
+
+**Model warm-up procedure:**
+```python
+# Run dummy forward passes before serving real requests
+def warmup_model(model, input_shape, n_warmup=10):
+    dummy_input = torch.randn(input_shape).to('cuda')
+    
+    for i in range(n_warmup):
+        with torch.no_grad():
+            _ = model(dummy_input)
+    
+    torch.cuda.synchronize()
+    print(f"Model warmed up after {n_warmup} forward passes")
+
+# In Kubernetes: use startupProbe to delay traffic until warm-up completes
+```
+
+**Kubernetes solution:** Use a readiness probe that fails until warm-up completes. The pod won't receive traffic until it's truly ready.
+
+**Serverless cold start:** Functions like AWS Lambda load the model on every cold start. Mitigation: keep instances warm with scheduled "ping" requests, or use provisioned concurrency.
+
+---
+
+### Q352. What is speculative decoding and how does it speed up LLM inference?
+
+**Answer:**
+
+**Speculative decoding** (DeepMind, 2022) is a technique to speed up large language model inference by using a smaller, faster "draft" model to generate candidate token sequences, which the large model then verifies in parallel.
+
+**The problem with LLM inference:**
+```
+Standard autoregressive decoding:
+Token 1 → Token 2 → Token 3 → ... → Token N
+Each token requires a full forward pass of the large model → sequential, slow
+```
+
+**Speculative decoding:**
+```
+Draft model (small, fast):    generates tokens 1-7 quickly
+Large model (verifier):       checks tokens 1-7 in ONE forward pass (parallel)
+                              accepts correct tokens, rejects wrong ones from the first mismatch
+```
+
+**Why the verifier can run in parallel:** The large model can process all 7 candidate tokens in one batched forward pass — same cost as processing 1 token.
+
+**Speedup:** When the draft model's tokens are mostly accepted (70-90% acceptance rate), you effectively generate 5-7 tokens per large model forward pass instead of 1. Typical speedup: 2-3×.
+
+**Choosing the draft model:**
+- Must produce tokens that the large model would likely agree with (high acceptance rate)
+- Must be significantly faster than the large model (typically 5-10× smaller)
+- Same tokenizer as the large model
+- Example: Llama-68M as draft for Llama-70B
+
+**When it works best:** Creative text generation (high acceptance rate). When it doesn't: highly constrained generation where the large model frequently overrides the draft.
+
+---
+
+### Q353. What is GPU memory management in ML inference and why do services run out of memory?
+
+**Answer:**
+
+GPU memory (VRAM) is the critical bottleneck in ML inference. Unlike CPU memory, you can't swap to disk — running out of VRAM causes an out-of-memory (OOM) crash, killing the inference process.
+
+**Sources of GPU memory usage in LLM serving:**
+
+**Model weights:** A 7B-parameter model at FP16 = 7B × 2 bytes = 14GB. At INT8 = 7GB. At INT4 ≈ 3.5GB.
+
+**KV cache:** For each token in the context window, each layer stores Key and Value tensors. For Llama-2-13B, processing a 4K context window uses ~1.5GB just for KV cache. Longer contexts → more KV cache.
+```
+KV cache size ≈ 2 × layers × num_heads × head_dim × context_length × batch_size × dtype_bytes
+```
+
+**Activation memory:** Intermediate values during computation.
+
+**Why services OOM:**
+
+1. **Concurrent requests with long contexts:** 10 simultaneous requests each with 2K context → KV cache saturates memory
+2. **Batch size too large:** Doubling batch size roughly doubles activation memory
+3. **Memory fragmentation:** Many allocations/deallocations cause fragmentation → can't allocate a large contiguous block
+
+**Solutions:**
+
+**PagedAttention (vLLM):** Inspired by OS virtual memory paging. KV cache is divided into fixed-size pages, allocated on demand. Eliminates internal fragmentation. Enables 3-5× more concurrent users vs. standard serving.
+
+**Quantization:** INT8/INT4 weights reduce model memory footprint 2-4×.
+
+**Dynamic batching + memory budgets:** Limit max batch size based on available VRAM. Reject or queue requests when memory budget is tight.
+
+```python
+# vLLM server — handles memory management automatically
+from vllm import LLM
+llm = LLM(model="meta-llama/Llama-2-7b",
+          max_model_len=4096,
+          gpu_memory_utilization=0.90)  # use up to 90% of VRAM
 ```
 
 ---
@@ -4511,6 +5641,141 @@ if today_count > ucl.iloc[-1] or today_count < lcl.iloc[-1]:
 ```
 
 **Tools:** Monte Carlo Data, Anomalo, and custom implementations in Airflow/dbt all use variants of SPC for automated data quality monitoring.
+
+---
+
+### Q354. What is data observability and how does it differ from application monitoring?
+
+**Answer:**
+
+**Data observability** is the ability to understand, monitor, and troubleshoot data health across the entire data lifecycle — pipelines, storage, transformations, and model inputs. It's "monitoring for your data," not for your application.
+
+**Application monitoring** asks: "Is the service running? What's the latency?"
+**Data observability** asks: "Is the data correct, fresh, complete, and consistent?"
+
+**The five pillars of data observability** (Monte Carlo framework):
+
+| Pillar | Question |
+|--------|---------|
+| **Freshness** | When was this data last updated? Is it stale? |
+| **Volume** | Does the table have the expected number of rows? |
+| **Distribution** | Are value distributions within expected ranges? |
+| **Schema** | Did any columns get added, removed, or changed type? |
+| **Lineage** | Which upstream datasets does this depend on? Who consumes it? |
+
+**Why it's different from application monitoring:**
+```
+App monitoring: "API is up, p99 latency = 120ms" ← everything looks fine
+Data observability: "The orders table has 40% fewer rows than usual"
+                    "The user_age column has 25% nulls (was 0.5%)"
+                    "The sales dashboard shows $0 revenue for yesterday"
+```
+
+Data problems are often **silent** — the system is technically running but producing wrong results.
+
+**Tools:** Monte Carlo, Acceldata, Lightup.ai, Great Expectations + custom dashboards, dbt tests.
+
+**Implementation pattern:** Run data quality checks as the first task in every downstream pipeline. If checks fail → halt the pipeline, alert the data owner, log the issue with lineage context.
+
+---
+
+### Q355. What is data profiling and what does it reveal?
+
+**Answer:**
+
+**Data profiling** is the process of examining a dataset to collect statistics and metadata — understanding its structure, completeness, distributions, and relationships. It's exploratory analysis applied systematically and at scale, often automated.
+
+**What profiling reveals:**
+
+**Structure:** Column names, types, count, sample values.
+
+**Completeness:**
+```
+Column: email
+  Null rate: 3.2%
+  Empty string rate: 1.1%
+  Total missing: 4.3%  ← might be a problem for email campaigns
+```
+
+**Distributions:**
+```
+Column: age
+  Min: -1  ← error! negative age
+  Max: 999 ← sentinel value used for "unknown"
+  Mean: 34.2, Median: 32, Std: 12.1
+  Percentiles: p5=18, p25=26, p50=32, p75=41, p95=58
+```
+
+**Uniqueness:**
+```
+Column: user_id
+  Distinct count: 9,842 of 10,000 rows
+  Duplicate rate: 1.6%  ← unexpected for a primary key
+```
+
+**Relationships:**
+```
+If status = "cancelled" → refund_date should not be null (but it is for 12% of rows)
+```
+
+**For ML specifically:** Profile your training data before modeling:
+- Identify leakage candidates (features that shouldn't exist, like future information)
+- Spot class imbalance
+- Find outliers that will dominate gradient updates
+- Identify correlated features (redundant information)
+
+**Tools:** `pandas-profiling` / `ydata-profiling`, Great Expectations, `sweetviz`, dbt's `dbt-profiler`, cloud data warehouse profiling (BigQuery's INFORMATION_SCHEMA).
+
+```python
+from ydata_profiling import ProfileReport
+profile = ProfileReport(df, title="Training Data Profile")
+profile.to_file("profile.html")
+```
+
+---
+
+### Q356. How do you monitor ML model performance when ground truth labels are delayed?
+
+**Answer:**
+
+Most ML monitoring tutorials assume ground truth is available immediately. In reality, the true label for a prediction might take hours, days, or weeks to observe. A fraud model's ground truth (was it actually fraud?) arrives after the chargeback process — potentially 30-60 days later.
+
+**The problem:**
+```
+Model predicts: "This transaction is NOT fraudulent" (t=0)
+Ground truth arrives 45 days later: "It WAS fraudulent (chargebacked)" (t=45 days)
+→ You won't know for 45 days if your model is degrading
+```
+
+**Monitoring strategies without labels:**
+
+**1. Input feature monitoring (proxy for output quality):**
+Track statistical drift of input features. If feature distributions shift significantly, model performance is likely degrading — even before labels arrive.
+
+**2. Prediction distribution monitoring:**
+```python
+# Track the distribution of model outputs over time
+today_scores = np.array([model.predict(x) for x in today_requests])
+baseline_scores = load_baseline_distribution()
+
+# KS test: are distributions significantly different?
+from scipy.stats import ks_2samp
+stat, p_value = ks_2samp(baseline_scores, today_scores)
+if p_value < 0.05:
+    alert("Prediction distribution shifted significantly")
+```
+
+**3. Proxy metrics (leading indicators):**
+Metrics correlated with model quality that are available immediately:
+- Fraud model: dispute rate, customer service complaints
+- Recommendation model: immediate click-through rate (CTR)
+- Credit scoring: early-stage delinquency rate (30-day DPD vs. 90-day)
+
+**4. Waiting window + delayed evaluation:**
+Once labels arrive (even partially), evaluate on them. Design A/B tests with control groups to detect model drift before labels arrive for the full population.
+
+**5. Weak supervision / label estimation:**
+Use heuristics or a faster-labeling process to get approximate labels. "Did the customer dispute the charge within 7 days?" is a partial proxy for fraud.
 
 ---
 
