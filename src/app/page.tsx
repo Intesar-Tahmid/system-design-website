@@ -2,14 +2,13 @@ import { ChapterGroup } from '@/components/home/ChapterGrid'
 import { HomeClient } from '@/components/home/HomeClient'
 import { getAllQuestions } from '@/lib/content'
 import { getChapters, getChapterGroups } from '@/lib/chapters'
-import { createClient } from '@/lib/supabase-server'
+import { getServerUser } from '@/lib/supabase-server'
 
 export default async function HomePage() {
   const questions = getAllQuestions()
   const chapters = getChapters()
   const groups = getChapterGroups()
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getServerUser()
 
   let cardIndex = 0
 

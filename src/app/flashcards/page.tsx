@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase-server'
+import { getServerUser } from '@/lib/supabase-server'
 import { getAllQuestions } from '@/lib/content'
 import { getChapters } from '@/lib/chapters'
 import { FlashcardsDashboardClient } from '@/components/flashcards/FlashcardsDashboardClient'
@@ -6,9 +6,7 @@ import { FlashcardsDashboardClient } from '@/components/flashcards/FlashcardsDas
 export const dynamic = 'force-dynamic'
 
 export default async function FlashcardsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
+  const user = await getServerUser()
   const questions = getAllQuestions()
   const chapters = getChapters()
 

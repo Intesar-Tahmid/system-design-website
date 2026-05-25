@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation'
 import { getAllChapterSlugs, getQuestionsByChapter } from '@/lib/content'
 import { getChapterBySlug } from '@/lib/chapters'
 import { ChapterClient } from '@/components/chapter/ChapterClient'
-import { createClient } from '@/lib/supabase-server'
+import { getServerUser } from '@/lib/supabase-server'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -30,8 +30,7 @@ export default async function ChapterPage({ params }: Props) {
     notFound()
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getServerUser()
 
   return <ChapterClient chapter={chapter} questions={questions} user={user ? { email: user.email ?? '' } : null} />
 }

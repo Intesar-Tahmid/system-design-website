@@ -4,9 +4,9 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
-  // Ensure markdown files are included in Vercel serverless bundles
+  // Ensure markdown files are included in ALL Vercel serverless bundles
   outputFileTracingIncludes: {
-    '/api/**': ['./system_design_*.md'],
+    '/**': ['./system_design_*.md'],
   },
   // Redirect trailing-slash URLs from the old static export to clean URLs
   async redirects() {
