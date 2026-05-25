@@ -2,7 +2,7 @@
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FlashCard } from './FlashCard'
-import { ReviewButtons } from './ReviewButtons'
+import { AnswerOverlay } from './AnswerOverlay'
 import { QUALITY_MAP, calculateSM2, initialSM2State, type RatingLabel, type StoredSM2State } from '@/lib/spaced-repetition'
 import { ArrowLeft, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
@@ -78,13 +78,14 @@ export function StudySession({ cards, isAuthenticated, onSessionComplete }: Stud
     const next = reviewedCount + 1
     setReviewedCount(next)
     setDirection(1)
-    await new Promise(r => setTimeout(r, 180))
     setIsFlipped(false)
     setIsSubmitting(false)
 
+    await new Promise(r => setTimeout(r, 120))
+
     if (index + 1 >= cards.length) {
       onSessionComplete?.(next)
-      setIndex(cards.length) // triggers complete screen
+      setIndex(cards.length)
     } else {
       setIndex(i => i + 1)
     }
@@ -137,58 +138,69 @@ export function StudySession({ cards, isAuthenticated, onSessionComplete }: Stud
   const progress = (index / cards.length) * 100
 
   return (
-    <div className="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto px-4">
-      {/* Header */}
-      <div className="w-full flex items-center gap-3">
-        <Link href="/flashcards" className="p-1.5 rounded-xl hover:bg-slate-100 transition-colors">
-          <ArrowLeft size={16} className="text-slate-500" />
-        </Link>
-        <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-          <motion.div
-            className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full"
-            animate={{ width: `${progress}%` }}
-            transition={{ duration: 0.3 }}
-          />
+    <>
+      <div className="flex flex-col items-center gap-5 w-full max-w-2xl mx-auto px-4">
+        {/* Progress bar header */}
+        <div className="w-full flex items-center gap-3">
+          <Link href="/flashcards" className="p-1.5 rounded-xl hover:bg-slate-100 transition-colors">
+            <ArrowLeft size={16} className="text-slate-500" />
+          </Link>
+          <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+            <motion.div
+              className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full"
+              animate={{ width: `${progress}%` }}
+              transition={{ duration: 0.3 }}
+            />
+          </div>
+          <span className="text-xs font-mono text-slate-400 shrink-0 tabular-nums">
+            {index}/{cards.length}
+          </span>
         </div>
-        <span className="text-xs font-mono text-slate-400 shrink-0 tabular-nums">
-          {index}/{cards.length}
-        </span>
+
+        {/* Question card with slide transition */}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={current.questionId}
+            className="w-full"
+            initial={{ opacity: 0, x: direction * 50 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: direction * -50 }}
+            transition={{ duration: 0.22, ease: 'easeOut' }}
+          >
+            <FlashCard
+              questionId={current.questionId}
+              title={current.title}
+              chapter={current.chapter}
+              gradient={current.gradient}
+              isNew={current.isNew}
+              isFlipped={isFlipped}
+              onClick={() => !isFlipped && setIsFlipped(true)}
+            />
+          </motion.div>
+        </AnimatePresence>
+
+        {!isFlipped && (
+          <p className="text-xs text-slate-400 text-center">
+            Think of your answer, then click the card to reveal it
+          </p>
+        )}
       </div>
 
-      {/* Card with slide transition */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={current.questionId}
-          className="w-full"
-          initial={{ opacity: 0, x: direction * 50 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: direction * -50 }}
-          transition={{ duration: 0.22, ease: 'easeOut' }}
-        >
-          <FlashCard
+      {/* Full-screen answer overlay — rendered outside the constrained container */}
+      <AnimatePresence>
+        {isFlipped && current && (
+          <AnswerOverlay
             questionId={current.questionId}
             title={current.title}
             chapter={current.chapter}
             content={current.content}
             gradient={current.gradient}
-            isNew={current.isNew}
-            onFlip={() => setIsFlipped(true)}
+            onRate={handleRate}
+            onClose={() => setIsFlipped(false)}
+            isSubmitting={isSubmitting}
           />
-        </motion.div>
+        )}
       </AnimatePresence>
-
-      {/* Review buttons */}
-      <ReviewButtons
-        onRate={handleRate}
-        disabled={isSubmitting}
-        isVisible={isFlipped}
-      />
-
-      {!isFlipped && (
-        <p className="text-xs text-slate-400 text-center">
-          Think of your answer, then click the card to reveal it
-        </p>
-      )}
-    </div>
+    </>
   )
 }
