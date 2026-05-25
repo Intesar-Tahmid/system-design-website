@@ -4,32 +4,32 @@ import { motion, AnimatePresence, useInView, useMotionValue, useSpring } from 'f
 import { Search, Sparkles, Database, Cloud, Brain, Shield, Cpu, Network } from 'lucide-react'
 
 const EXAMPLE_QUERIES = [
-  'How does DNS work?',
+  'How does attention work in transformers?',
+  'What is the bias-variance tradeoff?',
+  'How do you prevent model drift in production?',
+  'What is RAG and when should you use it?',
+  'How does backpropagation work?',
   'What is the CAP theorem?',
-  'How to design Twitter?',
-  'What is consistent hashing?',
-  'How does Redis work?',
-  'What is a circuit breaker?',
-  'How does JWT work?',
-  'What is database sharding?',
-  'How does Kafka differ from RabbitMQ?',
-  'What happens when you type a URL?',
+  'How does RLHF fine-tune LLMs?',
+  'What is a feature store?',
+  'How does consistent hashing work?',
+  'What is the difference between MLE and MAP?',
 ]
 
 const FLOATING_CHIPS = [
-  { label: 'DNS', color: 'bg-blue-100 text-blue-600 border-blue-200' },
-  { label: 'Redis', color: 'bg-rose-100 text-rose-600 border-rose-200' },
+  { label: 'Transformers', color: 'bg-blue-100 text-blue-600 border-blue-200' },
+  { label: 'RAG', color: 'bg-rose-100 text-rose-600 border-rose-200' },
   { label: 'Kafka', color: 'bg-orange-100 text-orange-600 border-orange-200' },
-  { label: 'gRPC', color: 'bg-emerald-100 text-emerald-600 border-emerald-200' },
-  { label: 'CAP', color: 'bg-violet-100 text-violet-600 border-violet-200' },
+  { label: 'LLM Fine-tuning', color: 'bg-emerald-100 text-emerald-600 border-emerald-200' },
+  { label: 'CAP theorem', color: 'bg-violet-100 text-violet-600 border-violet-200' },
   { label: 'Docker', color: 'bg-sky-100 text-sky-600 border-sky-200' },
-  { label: 'JWT', color: 'bg-amber-100 text-amber-600 border-amber-200' },
-  { label: 'WebSocket', color: 'bg-teal-100 text-teal-600 border-teal-200' },
-  { label: 'CDN', color: 'bg-pink-100 text-pink-600 border-pink-200' },
-  { label: 'ACID', color: 'bg-indigo-100 text-indigo-600 border-indigo-200' },
+  { label: 'Backprop', color: 'bg-amber-100 text-amber-600 border-amber-200' },
+  { label: 'RLHF', color: 'bg-teal-100 text-teal-600 border-teal-200' },
+  { label: 'Feature Store', color: 'bg-pink-100 text-pink-600 border-pink-200' },
+  { label: 'Embeddings', color: 'bg-indigo-100 text-indigo-600 border-indigo-200' },
   { label: 'Kubernetes', color: 'bg-lime-100 text-lime-700 border-lime-200' },
-  { label: 'GraphQL', color: 'bg-fuchsia-100 text-fuchsia-600 border-fuchsia-200' },
-  { label: 'Raft', color: 'bg-cyan-100 text-cyan-600 border-cyan-200' },
+  { label: 'Attention', color: 'bg-fuchsia-100 text-fuchsia-600 border-fuchsia-200' },
+  { label: 'Redis', color: 'bg-cyan-100 text-cyan-600 border-cyan-200' },
   { label: 'MLOps', color: 'bg-purple-100 text-purple-600 border-purple-200' },
 ]
 
@@ -54,12 +54,12 @@ const CHIP_POSITIONS = [
 const FLOAT_DELAYS = [0, 0.8, 1.6, 0.4, 1.2, 2.0, 0.6, 1.4, 0.2, 1.0, 1.8, 0.3, 1.1, 1.7]
 
 const CATEGORY_STATS = [
-  { label: 'System Design', count: 95, icon: Network,   color: 'from-indigo-500 to-blue-500',   bg: 'bg-indigo-50',   text: 'text-indigo-600',   bar: 'bg-indigo-500' },
-  { label: 'ML / AI',       count: 88, icon: Brain,      color: 'from-purple-500 to-violet-500', bg: 'bg-purple-50',   text: 'text-purple-600',   bar: 'bg-purple-500' },
-  { label: 'DevOps / Infra', count: 72, icon: Cloud,     color: 'from-sky-500 to-cyan-500',      bg: 'bg-sky-50',      text: 'text-sky-600',      bar: 'bg-sky-500' },
-  { label: 'Databases',     count: 58, icon: Database,   color: 'from-emerald-500 to-teal-500',  bg: 'bg-emerald-50',  text: 'text-emerald-600',  bar: 'bg-emerald-500' },
-  { label: 'Security',      count: 34, icon: Shield,     color: 'from-rose-500 to-pink-500',     bg: 'bg-rose-50',     text: 'text-rose-600',     bar: 'bg-rose-500' },
-  { label: 'Distributed',   count: 57, icon: Cpu,        color: 'from-amber-500 to-orange-500',  bg: 'bg-amber-50',    text: 'text-amber-600',    bar: 'bg-amber-500' },
+  { label: 'ML / Deep Learning', count: 138, icon: Brain,   color: 'from-purple-500 to-violet-500', bg: 'bg-purple-50',   text: 'text-purple-600',   bar: 'bg-purple-500' },
+  { label: 'System Design',      count: 95,  icon: Network,  color: 'from-indigo-500 to-blue-500',   bg: 'bg-indigo-50',   text: 'text-indigo-600',   bar: 'bg-indigo-500' },
+  { label: 'DevOps / Infra',     count: 72,  icon: Cloud,    color: 'from-sky-500 to-cyan-500',      bg: 'bg-sky-50',      text: 'text-sky-600',      bar: 'bg-sky-500' },
+  { label: 'Databases',          count: 58,  icon: Database, color: 'from-emerald-500 to-teal-500',  bg: 'bg-emerald-50',  text: 'text-emerald-600',  bar: 'bg-emerald-500' },
+  { label: 'Distributed Systems',count: 57,  icon: Cpu,      color: 'from-amber-500 to-orange-500',  bg: 'bg-amber-50',    text: 'text-amber-600',    bar: 'bg-amber-500' },
+  { label: 'Security',           count: 34,  icon: Shield,   color: 'from-rose-500 to-pink-500',     bg: 'bg-rose-50',     text: 'text-rose-600',     bar: 'bg-rose-500' },
 ]
 
 const FILE_BREAKDOWN = [
@@ -165,12 +165,12 @@ export function HeroSection({ totalQuestions, totalChapters, onSearchOpen }: Her
           transition={{ duration: 0.55, delay: 0.1 }}
           className="text-5xl sm:text-6xl lg:text-[4.25rem] font-extrabold text-slate-900 tracking-tight leading-[1.08] mb-5"
         >
-          System design,{' '}
+          AI Engineering{' '}
           <span
             className="bg-clip-text text-transparent"
             style={{ backgroundImage: 'linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%)' }}
           >
-            explained.
+            demystified.
           </span>
         </motion.h1>
 
@@ -178,10 +178,9 @@ export function HeroSection({ totalQuestions, totalChapters, onSearchOpen }: Her
           initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
-          className="text-lg text-slate-500 leading-relaxed mb-10 max-w-lg mx-auto"
+          className="text-lg text-slate-500 leading-relaxed mb-10 max-w-xl mx-auto"
         >
-          From &ldquo;what happens when you type a URL&rdquo; to designing systems that handle a billion users.
-          Real answers, real code.
+          AI Engineering is a bit of everything — distributed systems, ML theory, NLP, deep learning, and production infrastructure. It sounds overwhelming. It isn&rsquo;t, with the right guide.
         </motion.p>
 
         {/* Search bar — the main CTA */}
@@ -223,7 +222,7 @@ export function HeroSection({ totalQuestions, totalChapters, onSearchOpen }: Her
           className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 mt-7 text-sm"
         >
           <span className="text-slate-400 text-xs font-medium">Jump to →</span>
-          {['DNS', 'CAP theorem', 'Redis', 'Kafka', 'JWT', 'Docker', 'Sharding'].map(tag => (
+          {['Transformers', 'RAG', 'Backprop', 'CAP theorem', 'MLOps', 'Embeddings', 'RLHF'].map(tag => (
             <button
               key={tag}
               onClick={onSearchOpen}

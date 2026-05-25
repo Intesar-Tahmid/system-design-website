@@ -363,6 +363,33 @@ const CHAPTER_META: Record<string, ChapterMeta> = {
     accentText: 'text-purple-700',
     difficulty: 'Advanced',
   },
+  'ml-probability-statistics': {
+    description: 'Bayesian inference, distributions, hypothesis testing, information theory for ML',
+    emoji: '📊',
+    gradient: 'from-violet-500 to-indigo-500',
+    accentBg: 'bg-violet-50',
+    accentBorder: 'border-violet-200',
+    accentText: 'text-violet-700',
+    difficulty: 'Advanced',
+  },
+  'nlp-engineering': {
+    description: 'Tokenization, embeddings, transformers, RAG, LLMs, evaluation metrics',
+    emoji: '💬',
+    gradient: 'from-teal-500 to-emerald-500',
+    accentBg: 'bg-teal-50',
+    accentBorder: 'border-teal-200',
+    accentText: 'text-teal-700',
+    difficulty: 'Advanced',
+  },
+  'deep-learning-internals': {
+    description: 'Backprop, optimizers, regularization, attention, training at scale',
+    emoji: '🧬',
+    gradient: 'from-fuchsia-600 to-purple-700',
+    accentBg: 'bg-fuchsia-50',
+    accentBorder: 'border-fuchsia-200',
+    accentText: 'text-fuchsia-700',
+    difficulty: 'Advanced',
+  },
 }
 
 const DEFAULT_META: ChapterMeta = {
@@ -409,26 +436,26 @@ export function getChapterGroups(): Array<{
   const chapters = getChapters()
   return [
     {
-      label: 'Part 1 — Foundations',
-      subtitle: 'Web, networking, databases, and core architecture',
+      label: 'Part 1 — Engineering Foundations',
+      subtitle: 'Web, networking, databases, and core system architecture every AI engineer needs',
       fileIndex: 1,
       chapters: chapters.filter((c) => c.fileIndex === 1),
     },
     {
-      label: 'Part 2 — DevOps & MLOps',
-      subtitle: 'Infrastructure, CI/CD, and machine learning operations',
+      label: 'Part 2 — ML & AI Systems',
+      subtitle: 'MLOps, infrastructure, probability, NLP, and deep learning internals',
       fileIndex: 2,
       chapters: chapters.filter((c) => c.fileIndex === 2),
     },
     {
-      label: 'Part 3 — Advanced Topics',
-      subtitle: 'Database selection, scaling patterns, and production AI',
+      label: 'Part 3 — Production & Scale',
+      subtitle: 'Database internals, scaling patterns, and production AI architecture',
       fileIndex: 3,
       chapters: chapters.filter((c) => c.fileIndex === 3),
     },
     {
       label: 'Part 4 — Deep Dives',
-      subtitle: 'Distributed systems theory and ML architecture internals',
+      subtitle: 'Distributed systems theory, consistency models, and advanced ML internals',
       fileIndex: 4,
       chapters: chapters.filter((c) => c.fileIndex === 4),
     },

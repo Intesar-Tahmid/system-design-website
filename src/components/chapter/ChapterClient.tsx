@@ -13,9 +13,10 @@ import { Menu, X } from 'lucide-react'
 interface ChapterClientProps {
   chapter: Chapter
   questions: Question[]
+  user?: { email: string } | null
 }
 
-export function ChapterClient({ chapter, questions }: ChapterClientProps) {
+export function ChapterClient({ chapter, questions, user }: ChapterClientProps) {
   const { completedIds, toggle: toggleComplete, isCompleted } = useProgress()
   const { bookmarkedIds, toggle: toggleBookmark, isBookmarked } = useBookmarks()
   const [activeId, setActiveId] = useState<number | undefined>(questions[0]?.id)
@@ -48,7 +49,7 @@ export function ChapterClient({ chapter, questions }: ChapterClientProps) {
 
   return (
     <div>
-      <Header onSearchOpen={() => setSearchOpen(true)} />
+      <Header onSearchOpen={() => setSearchOpen(true)} user={user} />
       <SearchModal
         questions={questions}
         isOpen={searchOpen}

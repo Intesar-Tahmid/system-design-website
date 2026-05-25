@@ -9,16 +9,17 @@ interface HomeClientProps {
   questions: Question[]
   totalQuestions: number
   totalChapters: number
+  user?: { email: string } | null
 }
 
-export function HomeClient({ questions, totalQuestions, totalChapters }: HomeClientProps) {
+export function HomeClient({ questions, totalQuestions, totalChapters, user }: HomeClientProps) {
   const [searchOpen, setSearchOpen] = useState(false)
   const open = () => setSearchOpen(true)
   const close = () => setSearchOpen(false)
 
   return (
     <>
-      <Header onSearchOpen={open} />
+      <Header onSearchOpen={open} user={user} totalQuestions={totalQuestions} />
       <SearchModal questions={questions} isOpen={searchOpen} onClose={close} />
       <HeroSection
         totalQuestions={totalQuestions}

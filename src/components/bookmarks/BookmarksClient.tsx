@@ -13,9 +13,10 @@ import { BookmarkButton } from '@/components/ui/BookmarkButton'
 
 interface BookmarksClientProps {
   questions: Question[]
+  user?: { email: string } | null
 }
 
-export function BookmarksClient({ questions }: BookmarksClientProps) {
+export function BookmarksClient({ questions, user }: BookmarksClientProps) {
   const { toggle: toggleBookmark, isBookmarked } = useBookmarks()
   const { isCompleted, toggle: toggleComplete } = useProgress()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -27,7 +28,7 @@ export function BookmarksClient({ questions }: BookmarksClientProps) {
 
   return (
     <div>
-      <Header onSearchOpen={() => setSearchOpen(true)} />
+      <Header onSearchOpen={() => setSearchOpen(true)} user={user} />
       <SearchModal questions={questions} isOpen={searchOpen} onClose={() => setSearchOpen(false)} />
 
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
