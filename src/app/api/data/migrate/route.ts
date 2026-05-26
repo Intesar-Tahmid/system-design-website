@@ -9,7 +9,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { completedIds = [], bookmarkedIds = [] } = await request.json()
+  const body = await request.json()
+  const rawCompleted = Array.isArray(body.completedIds) ? body.completedIds : []
+  const rawBookmarked = Array.isArray(body.bookmarkedIds) ? body.bookmarkedIds : []
+
+  // Validate and sanitize: only positive integers, max 2000 per call
+  const isPositiveInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0
+  const completedIds = rawCompleted.filter(isPositiveInt).slice(0, 2000)
+  const bookmarkedIds = rawBookmarked.filter(isPositiveInt).slice(0, 2000)
+
   const now = new Date().toISOString()
 
   if (completedIds.length > 0) {

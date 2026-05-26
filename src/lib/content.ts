@@ -63,6 +63,9 @@ export function getAllQuestions(): Question[] {
       /^author/i,
       /^for python/i,
       /^theory-first/i,
+      // Sub-section headings within chapters (e.g. "Part 2 — Intermediate Concepts")
+      // These should keep questions under their parent chapter heading
+      /^part \d+/i,
     ]
 
     let inCodeBlock = false

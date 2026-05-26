@@ -39,10 +39,10 @@ export function FlashcardsDashboardClient({
   }, [])
 
   const fileGroups = [
-    { label: 'Foundations', fileIndex: 1, emoji: '🏗️' },
-    { label: 'DevOps & MLOps', fileIndex: 2, emoji: '⚙️' },
-    { label: 'Advanced Topics', fileIndex: 3, emoji: '🚀' },
-    { label: 'Deep Dives', fileIndex: 4, emoji: '🔬' },
+    { label: 'Foundations',        fileIndex: 1, emoji: '🧱' },
+    { label: 'DevOps & MLOps',     fileIndex: 2, emoji: '🛠️' },
+    { label: 'Production & Scale', fileIndex: 3, emoji: '🔭' },
+    { label: 'Deep Dives',         fileIndex: 4, emoji: '🧠' },
   ]
 
   return (

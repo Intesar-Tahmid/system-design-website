@@ -1,7 +1,7 @@
 'use client'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
-import { CheckCircle2, Bookmark, ChevronLeft } from 'lucide-react'
+import { CheckCircle2, Bookmark, ChevronLeft, ChevronsDown } from 'lucide-react'
 import { Question } from '@/types'
 import { ProgressBar } from '@/components/ui/ProgressBar'
 
@@ -23,11 +23,20 @@ export function Sidebar({
   activeId,
 }: SidebarProps) {
   const completed = questions.filter((q) => completedIds.includes(q.id)).length
+  const pct = questions.length > 0 ? Math.round((completed / questions.length) * 100) : 0
   const activeRef = useRef<HTMLAnchorElement>(null)
+  const allDone = completed === questions.length && questions.length > 0
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'nearest' })
   }, [activeId])
+
+  const jumpToNextIncomplete = useCallback(() => {
+    const next = questions.find((q) => !completedIds.includes(q.id))
+    if (next) {
+      document.getElementById(`q${next.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [questions, completedIds])
 
   return (
     <aside className="hidden lg:flex flex-col w-72 xl:w-80 shrink-0 sticky top-16 h-[calc(100vh-4rem)] overflow-hidden border-r border-slate-200 bg-white">
@@ -48,6 +57,24 @@ export function Sidebar({
           showLabel
           color={`bg-gradient-to-r ${chapterGradient}`}
         />
+
+        {/* Next incomplete button — only visible when there are incomplete questions */}
+        {!allDone && completed > 0 && (
+          <button
+            onClick={jumpToNextIncomplete}
+            className="mt-2.5 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
+          >
+            <ChevronsDown size={12} />
+            Jump to next ({questions.length - completed} left)
+          </button>
+        )}
+
+        {allDone && (
+          <div className="mt-2.5 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 rounded-lg">
+            <CheckCircle2 size={12} />
+            Chapter complete — {pct}%
+          </div>
+        )}
       </div>
 
       {/* Question list */}

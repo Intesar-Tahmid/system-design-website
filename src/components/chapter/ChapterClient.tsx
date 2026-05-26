@@ -137,6 +137,7 @@ export function ChapterClient({ chapter, questions, user }: ChapterClientProps) 
                   isBookmarked={isBookmarked(q.id)}
                   onToggleComplete={toggleComplete}
                   onToggleBookmark={toggleBookmark}
+                  accentGradient={chapter.gradient}
                 />
               ))}
             </div>

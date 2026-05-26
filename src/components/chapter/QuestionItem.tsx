@@ -14,6 +14,7 @@ interface QuestionItemProps {
   isBookmarked: boolean
   onToggleComplete: (id: number) => void
   onToggleBookmark: (id: number) => void
+  accentGradient?: string
 }
 
 export function QuestionItem({
@@ -22,6 +23,7 @@ export function QuestionItem({
   isBookmarked,
   onToggleComplete,
   onToggleBookmark,
+  accentGradient = 'from-indigo-500 to-purple-500',
 }: QuestionItemProps) {
   return (
     <motion.div
@@ -29,21 +31,30 @@ export function QuestionItem({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className={`bg-white rounded-2xl border shadow-sm overflow-hidden transition-all ${
+      className={`bg-white rounded-2xl border shadow-sm overflow-hidden transition-colors ${
         isCompleted ? 'border-green-200' : 'border-slate-200'
       }`}
     >
+      {/* Gradient top stripe — matches chapter color, thicker when done */}
+      <div className={`w-full bg-gradient-to-r ${accentGradient} transition-all ${isCompleted ? 'h-1.5 opacity-100' : 'h-0.5 opacity-40'}`} />
+
       {/* Question header */}
-      <div className={`px-5 sm:px-6 py-4 border-b flex items-start gap-3 ${isCompleted ? 'border-green-100 bg-green-50/50' : 'border-slate-100 bg-slate-50'}`}>
+      <div className={`px-5 sm:px-6 py-4 border-b flex items-start gap-3 ${
+        isCompleted ? 'border-green-100 bg-green-50/40' : 'border-slate-100 bg-slate-50/60'
+      }`}>
         {/* Q number badge */}
-        <div className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm ${
-          isCompleted ? 'bg-green-500 text-white' : 'bg-indigo-100 text-indigo-700'
+        <div className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm transition-colors ${
+          isCompleted
+            ? 'bg-green-500 text-white shadow-sm'
+            : `bg-gradient-to-br ${accentGradient} text-white shadow-sm`
         }`}>
           {question.id}
         </div>
 
         <div className="flex-1 min-w-0">
-          <h2 className="font-bold text-slate-900 text-base leading-snug">
+          <h2 className={`font-bold text-base leading-snug transition-colors ${
+            isCompleted ? 'text-slate-500' : 'text-slate-900'
+          }`}>
             {question.title}
           </h2>
         </div>
@@ -66,12 +77,10 @@ export function QuestionItem({
               code({ className, children, ...props }) {
                 const match = /language-(\w+)/.exec(className || '')
                 const codeStr = String(children).replace(/\n$/, '')
-                // Block code (has language class or is multiline)
                 const isBlock = !!match || codeStr.includes('\n')
                 if (isBlock) {
                   return <CodeBlock code={codeStr} language={match ? match[1] : ''} />
                 }
-                // Inline code
                 return (
                   <code className="bg-slate-100 text-rose-600 px-1.5 py-0.5 rounded text-sm font-mono" {...props}>
                     {children}
@@ -79,7 +88,6 @@ export function QuestionItem({
                 )
               },
               pre({ children }) {
-                // pre is handled by CodeBlock already
                 return <>{children}</>
               },
               table({ children }) {
@@ -103,8 +111,10 @@ export function QuestionItem({
       </div>
 
       {/* Footer */}
-      <div className="px-5 sm:px-6 py-3 border-t border-slate-100 bg-slate-50 flex items-center justify-between">
-        <span className="text-xs text-slate-400">Q{question.id} · {question.chapter}</span>
+      <div className="px-5 sm:px-6 py-3 border-t border-slate-100 bg-slate-50/60 flex items-center justify-between">
+        <span className="text-xs text-slate-400 font-mono">
+          Q{question.id} · <span className="text-slate-500">{question.chapter}</span>
+        </span>
         <CompleteButton
           isCompleted={isCompleted}
           onToggle={() => onToggleComplete(question.id)}
