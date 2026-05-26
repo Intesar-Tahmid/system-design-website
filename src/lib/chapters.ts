@@ -390,6 +390,24 @@ const CHAPTER_META: Record<string, ChapterMeta> = {
     accentText: 'text-fuchsia-700',
     difficulty: 'Advanced',
   },
+  'reinforcement-learning': {
+    description: 'MDPs, Bellman equations, Q-learning, policy gradients, PPO, SAC, RLHF',
+    emoji: '🎮',
+    gradient: 'from-green-500 to-emerald-600',
+    accentBg: 'bg-green-50',
+    accentBorder: 'border-green-200',
+    accentText: 'text-green-700',
+    difficulty: 'Advanced',
+  },
+  'generative-ai': {
+    description: 'LLMs, diffusion models, GANs, VAEs, RAG, fine-tuning, alignment, agents',
+    emoji: '✨',
+    gradient: 'from-violet-500 to-fuchsia-500',
+    accentBg: 'bg-violet-50',
+    accentBorder: 'border-violet-200',
+    accentText: 'text-violet-700',
+    difficulty: 'Advanced',
+  },
 }
 
 const DEFAULT_META: ChapterMeta = {
@@ -458,6 +476,12 @@ export function getChapterGroups(): Array<{
       subtitle: 'Distributed systems theory, consistency models, and advanced ML internals',
       fileIndex: 4,
       chapters: chapters.filter((c) => c.fileIndex === 4),
+    },
+    {
+      label: 'Part 5 — AI Specializations',
+      subtitle: 'Reinforcement learning from scratch and the full generative AI stack',
+      fileIndex: 5,
+      chapters: chapters.filter((c) => c.fileIndex === 5),
     },
   ]
 }

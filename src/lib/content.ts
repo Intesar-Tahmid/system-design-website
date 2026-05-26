@@ -7,6 +7,7 @@ const MD_FILES = [
   'system_design_2.md',
   'system_design_3.md',
   'system_design_4.md',
+  'system_design_5.md',
 ]
 
 export function slugify(str: string): string {

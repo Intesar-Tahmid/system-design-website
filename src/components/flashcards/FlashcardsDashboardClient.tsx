@@ -43,6 +43,7 @@ export function FlashcardsDashboardClient({
     { label: 'DevOps & MLOps',     fileIndex: 2, emoji: '🛠️' },
     { label: 'Production & Scale', fileIndex: 3, emoji: '🔭' },
     { label: 'Deep Dives',         fileIndex: 4, emoji: '🧠' },
+    { label: 'AI Specializations', fileIndex: 5, emoji: '✨' },
   ]
 
   return (

@@ -3,10 +3,11 @@ import { ChapterCard } from './ChapterCard'
 
 // Section metadata per file index
 const SECTION_META: Record<number, { emoji: string; tagline: string; gradient: string }> = {
-  1: { emoji: '🧱', tagline: 'The fundamentals every engineer needs to know',  gradient: 'from-blue-500 to-indigo-500'   },
-  2: { emoji: '🛠️', tagline: 'Infrastructure, pipelines, and ML operations',   gradient: 'from-purple-500 to-fuchsia-500' },
-  3: { emoji: '🔭', tagline: 'Deep dives, patterns, and production systems',   gradient: 'from-emerald-500 to-teal-500'   },
-  4: { emoji: '🧠', tagline: 'Theory, internals, and advanced architecture',   gradient: 'from-amber-500 to-orange-500'   },
+  1: { emoji: '🧱', tagline: 'The fundamentals every engineer needs to know',              gradient: 'from-blue-500 to-indigo-500'    },
+  2: { emoji: '🛠️', tagline: 'Infrastructure, pipelines, and ML operations',               gradient: 'from-purple-500 to-fuchsia-500'  },
+  3: { emoji: '🔭', tagline: 'Deep dives, patterns, and production systems',              gradient: 'from-emerald-500 to-teal-500'    },
+  4: { emoji: '🧠', tagline: 'Theory, internals, and advanced architecture',              gradient: 'from-amber-500 to-orange-500'    },
+  5: { emoji: '✨', tagline: 'Reinforcement learning and the full generative AI stack',   gradient: 'from-violet-500 to-fuchsia-500'  },
 }
 
 interface ChapterGroupProps {

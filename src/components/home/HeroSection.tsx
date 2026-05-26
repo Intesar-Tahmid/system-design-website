@@ -63,10 +63,11 @@ const CATEGORY_STATS = [
 ]
 
 const FILE_BREAKDOWN = [
-  { label: 'Foundations',       count: 99,  color: 'bg-indigo-500' },
+  { label: 'Foundations',        count: 99,  color: 'bg-indigo-500' },
   { label: 'DevOps & MLOps',    count: 100, color: 'bg-purple-500' },
   { label: 'Production & Scale', count: 88,  color: 'bg-emerald-500' },
   { label: 'Deep Dives',        count: 117, color: 'bg-amber-500' },
+  { label: 'AI Specializations', count: 60,  color: 'bg-violet-500' },
 ]
 
 function AnimatedNumber({ target, duration = 1.4 }: { target: number; duration?: number }) {
@@ -264,7 +265,7 @@ export function HeroSection({ totalQuestions, totalChapters, onSearchOpen }: Her
                 <span className="text-slate-400 text-sm font-medium mb-1.5">questions</span>
               </div>
               <p className="text-xs text-slate-500 mt-1">
-                across <span className="font-semibold text-slate-700">{totalChapters} chapters</span> · 4 volumes
+                across <span className="font-semibold text-slate-700">{totalChapters} chapters</span> · 5 volumes
               </p>
             </div>
           </div>
